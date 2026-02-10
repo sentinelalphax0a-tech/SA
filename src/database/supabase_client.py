@@ -14,6 +14,7 @@ from src import config
 from src.database.models import (
     Wallet,
     Market,
+    MarketSnapshot,
     Alert,
     WalletFunding,
     Scan,
@@ -146,6 +147,33 @@ class SupabaseClient:
 
     def delete_market(self, market_id: str) -> None:
         self.client.table("markets").delete().eq("market_id", market_id).execute()
+
+    # ── Market Snapshots ─────────────────────────────────
+
+    def insert_market_snapshot(self, snapshot: MarketSnapshot) -> None:
+        """Insert a point-in-time market snapshot for odds history."""
+        data = _serialize(asdict(snapshot))
+        data.pop("id", None)
+        self.client.table("market_snapshots").insert(data).execute()
+
+    def get_market_snapshots(
+        self, market_id: str, hours: int = 72
+    ) -> list[dict]:
+        """Fetch recent snapshots for a market, ordered by timestamp asc."""
+        from datetime import datetime, timedelta, timezone
+
+        cutoff = (
+            datetime.now(timezone.utc) - timedelta(hours=hours)
+        ).isoformat()
+        resp = (
+            self.client.table("market_snapshots")
+            .select("*")
+            .eq("market_id", market_id)
+            .gte("timestamp", cutoff)
+            .order("timestamp", desc=False)
+            .execute()
+        )
+        return resp.data or []
 
     # ── Alerts ─────────────────────────────────────────────
 

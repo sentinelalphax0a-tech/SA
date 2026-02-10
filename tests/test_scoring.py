@@ -6,7 +6,12 @@ from src import config
 
 
 def _make_filter(filter_def: dict) -> FilterResult:
-    return FilterResult(**filter_def)
+    return FilterResult(
+        filter_id=filter_def["id"],
+        filter_name=filter_def["name"],
+        points=filter_def["points"],
+        category=filter_def["category"],
+    )
 
 
 class TestScoreToStars:

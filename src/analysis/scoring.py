@@ -3,6 +3,13 @@ Scoring Engine.
 
 Calculates final score from triggered filters and applies multiplier patterns.
 42 filters | 6 multiplier patterns | Star levels 0-5.
+
+Steps:
+  1. Enforce mutual exclusion (keep highest-impact per group).
+  2. Sum raw points (floor at 0).
+  3. Check all 6 multiplier patterns, apply the highest match.
+  4. Compute final score = raw * multiplier.
+  5. Map to star level.
 """
 
 import logging
@@ -14,17 +21,19 @@ logger = logging.getLogger(__name__)
 
 
 def calculate_score(filters_triggered: list[FilterResult]) -> ScoringResult:
-    """
-    Calculate final score with multipliers.
+    """Calculate final score with mutual exclusion and multipliers.
 
-    1. Sum raw points (floor at 0).
-    2. Check all 6 multiplier patterns, apply the highest match.
-    3. Compute final score = raw * multiplier.
-    4. Map to star level.
+    Returns:
+        ScoringResult with score_raw, multiplier, score_final, star_level.
     """
-    score_raw = max(0, sum(f.points for f in filters_triggered))
+    # 1. Enforce mutual exclusion — keep only highest-impact per group
+    filters = _enforce_mutual_exclusion(filters_triggered)
 
-    ids = {f.filter_id for f in filters_triggered}
+    # 2. Sum raw points (floor at 0)
+    score_raw = max(0, sum(f.points for f in filters))
+
+    # 3. Check multiplier patterns — pick the highest matching multiplier
+    ids = {f.filter_id for f in filters}
     multiplier = 1.0
     matched_pattern: str | None = None
 
@@ -34,7 +43,10 @@ def calculate_score(filters_triggered: list[FilterResult]) -> ScoringResult:
                 multiplier = pattern["multiplier"]
                 matched_pattern = pattern["id"]
 
+    # 4. Final score
     score_final = int(score_raw * multiplier)
+
+    # 5. Star level
     star_level = _score_to_stars(score_final)
 
     return ScoringResult(
@@ -42,9 +54,35 @@ def calculate_score(filters_triggered: list[FilterResult]) -> ScoringResult:
         multiplier=multiplier,
         score_final=score_final,
         star_level=star_level,
-        filters_triggered=filters_triggered,
+        filters_triggered=filters,
         multiplier_pattern=matched_pattern,
     )
+
+
+def _enforce_mutual_exclusion(
+    filters: list[FilterResult],
+) -> list[FilterResult]:
+    """Remove lower-impact filters from mutually exclusive groups.
+
+    Within each group, only the filter with the highest ``abs(points)``
+    is kept.  This is a safety net — individual analyzers already enforce
+    exclusion, but the scoring engine guarantees it.
+    """
+    ids_to_remove: set[str] = set()
+
+    for group in config.MUTUALLY_EXCLUSIVE_GROUPS:
+        group_set = set(group)
+        group_filters = [f for f in filters if f.filter_id in group_set]
+        if len(group_filters) <= 1:
+            continue
+        # Keep the one with highest absolute impact
+        group_filters.sort(key=lambda f: abs(f.points), reverse=True)
+        for f in group_filters[1:]:
+            ids_to_remove.add(f.filter_id)
+
+    if not ids_to_remove:
+        return filters
+    return [f for f in filters if f.filter_id not in ids_to_remove]
 
 
 def _matches_pattern(ids: set[str], pattern: dict) -> bool:

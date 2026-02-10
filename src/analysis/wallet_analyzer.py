@@ -14,11 +14,22 @@ import logging
 from datetime import datetime, timedelta, timezone
 
 from src import config
-from src.database.models import Wallet, WalletFunding, FilterResult
+from src.database.models import Wallet, WalletFunding, FilterResult, TradeEvent
 from src.database.supabase_client import SupabaseClient
 from src.scanner.blockchain_client import BlockchainClient
 
 logger = logging.getLogger(__name__)
+
+
+def _fr(filt: dict, details: str | None = None) -> FilterResult:
+    """Build a FilterResult from a config filter dict."""
+    return FilterResult(
+        filter_id=filt["id"],
+        filter_name=filt["name"],
+        points=filt["points"],
+        category=filt["category"],
+        details=details,
+    )
 
 
 class WalletAnalyzer:
@@ -28,49 +39,153 @@ class WalletAnalyzer:
         self.db = db
         self.chain = chain
 
-    def analyze(self, wallet: Wallet) -> list[FilterResult]:
-        """Run all W and O filters on a wallet. Returns triggered filters."""
+    def analyze(
+        self, wallet_address: str, trades: list[TradeEvent]
+    ) -> list[FilterResult]:
+        """Run all W and O filters for a wallet.
+
+        Fetches on-chain data, builds a Wallet object, evaluates filters,
+        persists wallet + funding to DB.
+
+        Args:
+            wallet_address: Polygon address to analyze.
+            trades: Recent trades made by this wallet.
+        """
+        # --- Build Wallet from on-chain + trade data ---
+        age_days = self.chain.get_wallet_age_days(wallet_address)
+        is_first_pm = self.chain.is_first_tx_polymarket(wallet_address)
+        balance = self.chain.get_balance(wallet_address)
+        funding = self.chain.get_funding_sources(
+            wallet_address, max_hops=config.MAX_FUNDING_HOPS
+        )
+
+        # Count distinct markets from trades
+        market_ids = {t.market_id for t in trades}
+
+        wallet = Wallet(
+            address=wallet_address,
+            wallet_age_days=age_days,
+            total_markets=len(market_ids),
+            is_first_tx_pm=is_first_pm,
+        )
+
+        # --- Persist funding sources to DB for confluence_detector ---
+        for f in funding:
+            try:
+                self.db.insert_funding(f)
+            except Exception as e:
+                logger.debug("insert_funding skipped (duplicate?): %s", e)
+
+        # --- Evaluate filters ---
         results: list[FilterResult] = []
         results.extend(self._check_wallet_age(wallet))
         results.extend(self._check_market_count(wallet))
         results.extend(self._check_first_tx_pm(wallet))
-        results.extend(self._check_round_balance(wallet))
-        results.extend(self._check_origin(wallet))
+        results.extend(self._check_round_balance(wallet, balance))
+        results.extend(self._check_origin(wallet, funding))
+
+        # --- Persist wallet to DB ---
+        try:
+            self.db.upsert_wallet(wallet)
+        except Exception as e:
+            logger.error("upsert_wallet failed for %s: %s", wallet_address, e)
+
         return results
 
+    # ── W01 / W02 / W03 — Wallet age (mutually exclusive) ──
+
     def _check_wallet_age(self, wallet: Wallet) -> list[FilterResult]:
-        """W01/W02/W03 — Mutually exclusive age tiers."""
         if wallet.wallet_age_days is None:
             return []
         age = wallet.wallet_age_days
         if age < config.WALLET_AGE_VERY_NEW:
-            return [FilterResult(**config.FILTER_W01)]
+            return [_fr(config.FILTER_W01, f"age={age}d")]
         if age < config.WALLET_AGE_NEW:
-            return [FilterResult(**config.FILTER_W02)]
+            return [_fr(config.FILTER_W02, f"age={age}d")]
         if age < config.WALLET_AGE_RECENT:
-            return [FilterResult(**config.FILTER_W03)]
+            return [_fr(config.FILTER_W03, f"age={age}d")]
         return []
+
+    # ── W04 / W05 — Market count (mutually exclusive) ──────
 
     def _check_market_count(self, wallet: Wallet) -> list[FilterResult]:
-        """W04/W05 — Mutually exclusive market count tiers."""
         if wallet.total_markets == 1:
-            return [FilterResult(**config.FILTER_W04)]
-        if wallet.total_markets <= 3:
-            return [FilterResult(**config.FILTER_W05)]
+            return [_fr(config.FILTER_W04)]
+        if 2 <= wallet.total_markets <= 3:
+            return [_fr(config.FILTER_W05, f"markets={wallet.total_markets}")]
         return []
+
+    # ── W09 — First tx = Polymarket ────────────────────────
 
     def _check_first_tx_pm(self, wallet: Wallet) -> list[FilterResult]:
-        """W09 — First transaction is Polymarket."""
         if wallet.is_first_tx_pm:
-            return [FilterResult(**config.FILTER_W09)]
+            return [_fr(config.FILTER_W09)]
         return []
 
-    def _check_round_balance(self, wallet: Wallet) -> list[FilterResult]:
-        """W11 — Balance is a round number ($5k/$10k/$50k ±1%)."""
-        # TODO: Fetch live balance from chain client
-        raise NotImplementedError
+    # ── W11 — Round balance ($5k / $10k / $50k ±1%) ───────
 
-    def _check_origin(self, wallet: Wallet) -> list[FilterResult]:
-        """O01/O02/O03 — Exchange origin and funding recency."""
-        # TODO: Query wallet_funding table and evaluate
-        raise NotImplementedError
+    def _check_round_balance(
+        self, wallet: Wallet, balance: float | None = None
+    ) -> list[FilterResult]:
+        if balance is None:
+            try:
+                balance = self.chain.get_balance(wallet.address)
+            except Exception:
+                return []
+
+        if balance <= 0:
+            return []
+
+        for target in config.ROUND_BALANCES:
+            low = target * (1 - config.ROUND_BALANCE_TOLERANCE)
+            high = target * (1 + config.ROUND_BALANCE_TOLERANCE)
+            if low <= balance <= high:
+                return [_fr(config.FILTER_W11, f"balance=${balance:,.0f}≈${target:,.0f}")]
+        return []
+
+    # ── O01 / O02 / O03 — Origin & funding recency ────────
+
+    def _check_origin(
+        self, wallet: Wallet, funding: list[WalletFunding] | None = None
+    ) -> list[FilterResult]:
+        if funding is None:
+            try:
+                funding = self.chain.get_funding_sources(
+                    wallet.address, max_hops=config.MAX_FUNDING_HOPS
+                )
+            except Exception:
+                return []
+
+        if not funding:
+            return []
+
+        results: list[FilterResult] = []
+        now = datetime.now(timezone.utc)
+
+        # O01: funded from a known exchange (any hop)
+        for f in funding:
+            if f.is_exchange:
+                results.append(
+                    _fr(config.FILTER_O01, f"exchange={f.exchange_name} hop={f.hop_level}")
+                )
+                break  # one is enough
+
+        # O02 / O03: funding recency (mutually exclusive — take highest)
+        most_recent_ts: datetime | None = None
+        for f in funding:
+            if f.timestamp is not None:
+                ts = f.timestamp
+                # Ensure timezone-aware
+                if ts.tzinfo is None:
+                    ts = ts.replace(tzinfo=timezone.utc)
+                if most_recent_ts is None or ts > most_recent_ts:
+                    most_recent_ts = ts
+
+        if most_recent_ts is not None:
+            days_ago = (now - most_recent_ts).days
+            if days_ago < config.FUNDING_VERY_RECENT_DAYS:
+                results.append(_fr(config.FILTER_O03, f"funded {days_ago}d ago"))
+            elif days_ago < config.FUNDING_RECENCY_DAYS:
+                results.append(_fr(config.FILTER_O02, f"funded {days_ago}d ago"))
+
+        return results

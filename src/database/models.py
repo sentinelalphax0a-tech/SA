@@ -242,6 +242,17 @@ class AccumulationWindow:
 
 
 @dataclass
+class MarketSnapshot:
+    """Point-in-time snapshot of a market's odds/volume/liquidity."""
+    market_id: str
+    odds: float
+    volume_24h: float = 0.0
+    liquidity: float = 0.0
+    id: int | None = None
+    timestamp: datetime = field(default_factory=datetime.utcnow)
+
+
+@dataclass
 class FundingLink:
     """A funding connection between wallets."""
     sender: str
