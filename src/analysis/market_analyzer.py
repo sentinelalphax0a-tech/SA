@@ -5,6 +5,8 @@ Evaluates market-level conditions:
   M01: Anomalous volume (24h > 2x 7d average)
   M02: Stable odds broken (stable >48h, then move >10%)
   M03: Low liquidity (< $100k)
+  M04: Volume concentration (top 3 wallets >60%/>80%)
+  M05: Deadline proximity (<72h/<24h/<6h to resolution)
 
 M01 and M02 require historical data. During the first days of operation
 (no history yet), these filters gracefully return empty — data accumulates
@@ -12,10 +14,10 @@ with each scan via market_snapshots.
 """
 
 import logging
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 from src import config
-from src.database.models import Market, MarketSnapshot, FilterResult
+from src.database.models import Market, MarketSnapshot, TradeEvent, FilterResult
 
 logger = logging.getLogger(__name__)
 
@@ -40,7 +42,11 @@ class MarketAnalyzer:
 
     # ── Main entry point ─────────────────────────────────────
 
-    def analyze(self, market: Market) -> list[FilterResult]:
+    def analyze(
+        self,
+        market: Market,
+        trades: list[TradeEvent] | None = None,
+    ) -> list[FilterResult]:
         """Run all M filters on a market.
 
         Also saves a snapshot of current odds/volume/liquidity
@@ -48,6 +54,7 @@ class MarketAnalyzer:
 
         Args:
             market: Market object with current data.
+            trades: Recent trades in this market (for M04 concentration).
 
         Returns:
             List of triggered FilterResult objects.
@@ -59,6 +66,8 @@ class MarketAnalyzer:
         results.extend(self._check_volume_anomaly(market))
         results.extend(self._check_odds_stability_break(market))
         results.extend(self._check_low_liquidity(market))
+        results.extend(self._check_volume_concentration(trades))
+        results.extend(self._check_deadline_proximity(market))
         return results
 
     # ── Snapshot persistence ─────────────────────────────────
@@ -217,5 +226,85 @@ class MarketAnalyzer:
             return [_fr(
                 config.FILTER_M03,
                 f"liquidity=${market.liquidity:,.0f}",
+            )]
+        return []
+
+    # ── M04 — Volume concentration ────────────────────────
+
+    def _check_volume_concentration(
+        self, trades: list[TradeEvent] | None
+    ) -> list[FilterResult]:
+        """M04 — Top 3 wallets account for >60%/>80% of volume.
+
+        Mutually exclusive: M04b (high) takes priority over M04a (moderate).
+        """
+        if not trades:
+            return []
+
+        # Sum volume per wallet
+        wallet_volume: dict[str, float] = {}
+        for t in trades:
+            wallet_volume[t.wallet_address] = (
+                wallet_volume.get(t.wallet_address, 0.0) + t.amount
+            )
+
+        if not wallet_volume:
+            return []
+
+        total_volume = sum(wallet_volume.values())
+        if total_volume <= 0:
+            return []
+
+        # Top 3 by volume
+        top3_volume = sum(
+            sorted(wallet_volume.values(), reverse=True)[:3]
+        )
+        concentration = top3_volume / total_volume
+
+        if concentration >= config.VOLUME_CONCENTRATION_HIGH:
+            return [_fr(
+                config.FILTER_M04B,
+                f"top3={concentration:.0%} of ${total_volume:,.0f}",
+            )]
+        if concentration >= config.VOLUME_CONCENTRATION_MODERATE:
+            return [_fr(
+                config.FILTER_M04A,
+                f"top3={concentration:.0%} of ${total_volume:,.0f}",
+            )]
+        return []
+
+    # ── M05 — Deadline proximity ──────────────────────────
+
+    def _check_deadline_proximity(self, market: Market) -> list[FilterResult]:
+        """M05 — Market resolves within <6h/<24h/<72h.
+
+        Mutually exclusive: M05c (<6h) > M05b (<24h) > M05a (<72h).
+        """
+        if market.resolution_date is None:
+            return []
+
+        now = datetime.now(timezone.utc)
+        res_date = market.resolution_date
+        if res_date.tzinfo is None:
+            res_date = res_date.replace(tzinfo=timezone.utc)
+
+        hours_left = (res_date - now).total_seconds() / 3600
+        if hours_left < 0:
+            return []  # already passed
+
+        if hours_left < config.DEADLINE_6H:
+            return [_fr(
+                config.FILTER_M05C,
+                f"resolves in {hours_left:.1f}h",
+            )]
+        if hours_left < config.DEADLINE_24H:
+            return [_fr(
+                config.FILTER_M05B,
+                f"resolves in {hours_left:.1f}h",
+            )]
+        if hours_left < config.DEADLINE_72H:
+            return [_fr(
+                config.FILTER_M05A,
+                f"resolves in {hours_left:.1f}h",
             )]
         return []

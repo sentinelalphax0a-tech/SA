@@ -18,6 +18,8 @@ Evaluates behavior-level filters:
 import logging
 from datetime import datetime, timedelta, timezone
 
+from dateutil import parser as dt_parser
+
 from src import config
 from src.database.models import (
     Wallet,
@@ -27,6 +29,20 @@ from src.database.models import (
 )
 
 logger = logging.getLogger(__name__)
+
+
+def ensure_datetime(val) -> datetime:
+    """Convert a value to a timezone-aware UTC datetime.
+
+    Handles: datetime (naive → UTC), str (parse → UTC), passthrough for aware.
+    """
+    if isinstance(val, str):
+        val = dt_parser.parse(val)
+    if not isinstance(val, datetime):
+        raise TypeError(f"Cannot convert {type(val)} to datetime")
+    if val.tzinfo is None:
+        val = val.replace(tzinfo=timezone.utc)
+    return val
 
 
 def _fr(filt: dict, details: str | None = None) -> FilterResult:
@@ -54,6 +70,7 @@ class BehaviorAnalyzer:
         trades: list[TradeEvent],
         market_id: str,
         current_odds: float | None = None,
+        wallet_balance: float | None = None,
     ) -> list[FilterResult]:
         """Run all B filters for a wallet's trades in a specific market.
 
@@ -62,6 +79,7 @@ class BehaviorAnalyzer:
             trades: All recent trades (may include other wallets/markets).
             market_id: The market to focus on.
             current_odds: Current YES price for odds-move calculation.
+            wallet_balance: USDC balance of the wallet (for B23).
 
         Returns:
             List of triggered FilterResult objects.
@@ -97,6 +115,7 @@ class BehaviorAnalyzer:
         results.extend(self._check_low_hours(relevant))
         results.extend(self._check_accumulation_tiers(accum, odds_move))
         results.extend(self._check_whale_entry(relevant))
+        results.extend(self._check_position_sizing(accum, wallet_balance))
         if wallet is not None:
             results.extend(self._check_old_wallet_new_pm(wallet))
 
@@ -297,6 +316,31 @@ class BehaviorAnalyzer:
             return [_fr(config.FILTER_B19A, f"single_tx=${max_single:,.0f}")]
         return []
 
+    # ── B23 — Position sizing intelligence ───────────────────
+
+    def _check_position_sizing(
+        self, accum: AccumulationWindow, wallet_balance: float | None
+    ) -> list[FilterResult]:
+        """B23a/b — Position is a significant portion of wallet balance.
+
+        B23b (>50%) takes priority over B23a (20-50%). Mutually exclusive.
+        """
+        if wallet_balance is None or wallet_balance < 50:
+            return []
+
+        position_ratio = accum.total_amount / wallet_balance
+        if position_ratio >= config.POSITION_DOMINANT_MIN:
+            return [_fr(
+                config.FILTER_B23B,
+                f"position={position_ratio:.0%} of ${wallet_balance:,.0f}",
+            )]
+        if position_ratio >= config.POSITION_SIGNIFICANT_MIN:
+            return [_fr(
+                config.FILTER_B23A,
+                f"position={position_ratio:.0%} of ${wallet_balance:,.0f}",
+            )]
+        return []
+
     # ── B20 — Old wallet, new in Polymarket ──────────────────
 
     def _check_old_wallet_new_pm(self, wallet: Wallet) -> list[FilterResult]:
@@ -308,9 +352,10 @@ class BehaviorAnalyzer:
 
         # Use first_seen as proxy for when we first detected PM activity
         now = datetime.now(timezone.utc)
-        first_seen = wallet.first_seen
-        if first_seen.tzinfo is None:
-            first_seen = first_seen.replace(tzinfo=timezone.utc)
+        try:
+            first_seen = ensure_datetime(wallet.first_seen)
+        except (TypeError, ValueError):
+            return []
         pm_days = (now - first_seen).days
 
         if pm_days < config.OLD_WALLET_PM_MAX_DAYS:

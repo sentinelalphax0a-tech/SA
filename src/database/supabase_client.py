@@ -16,7 +16,10 @@ from src.database.models import (
     Market,
     MarketSnapshot,
     Alert,
+    AlertTracking,
     WalletFunding,
+    WalletPosition,
+    WalletCategory,
     Scan,
     WeeklyReport,
     SmartMoneyLeaderboard,
@@ -181,6 +184,7 @@ class SupabaseClient:
         """Insert an alert and return its ID."""
         data = _serialize(asdict(alert))
         data.pop("id", None)
+        data.pop("deduplicated", None)  # in-memory only, not in DB schema
         resp = self.client.table("alerts").insert(data).execute()
         if resp.data:
             return resp.data[0].get("id")
@@ -230,6 +234,38 @@ class SupabaseClient:
         data = _serialize(asdict(funding))
         data.pop("id", None)
         self.client.table("wallet_funding").insert(data).execute()
+
+    def insert_funding_batch(
+        self, fundings: list[WalletFunding], batch_size: int = 100
+    ) -> int:
+        """Insert multiple funding records in batches using upsert.
+
+        Returns the number of records successfully inserted.
+        """
+        if not fundings:
+            return 0
+
+        rows = []
+        for f in fundings:
+            d = _serialize(asdict(f))
+            d.pop("id", None)
+            rows.append(d)
+
+        inserted = 0
+        for i in range(0, len(rows), batch_size):
+            batch = rows[i : i + batch_size]
+            try:
+                self.client.table("wallet_funding").upsert(batch).execute()
+                inserted += len(batch)
+            except Exception as e:
+                logger.warning("Batch funding insert failed (%d rows), falling back: %s", len(batch), e)
+                for row in batch:
+                    try:
+                        self.client.table("wallet_funding").insert(row).execute()
+                        inserted += 1
+                    except Exception:
+                        pass  # duplicate or other error
+        return inserted
 
     def get_funding_sources(self, wallet_address: str) -> list[dict]:
         resp = (
@@ -307,6 +343,110 @@ class SupabaseClient:
         self.client.table("smart_money_leaderboard").delete().eq(
             "address", address
         ).execute()
+
+    # ── Alert Tracking ────────────────────────────────────
+
+    def upsert_alert_tracking(self, tracking: AlertTracking) -> None:
+        """Insert or update an alert tracking record."""
+        data = _serialize(asdict(tracking))
+        data.pop("id", None)
+        self.client.table("alert_tracking").upsert(data).execute()
+
+    def get_pending_alert_trackings(self) -> list[dict]:
+        """Get all alert_tracking rows with outcome='pending'."""
+        resp = (
+            self.client.table("alert_tracking")
+            .select("*")
+            .eq("outcome", "pending")
+            .execute()
+        )
+        return resp.data or []
+
+    def update_alert_tracking_outcome(
+        self, alert_id: int, outcome: str, resolved_at: datetime | None = None
+    ) -> None:
+        """Update the outcome of an alert tracking record."""
+        update: dict = {"outcome": outcome}
+        if resolved_at:
+            update["resolved_at"] = resolved_at.isoformat()
+        self.client.table("alert_tracking").update(update).eq(
+            "alert_id", alert_id
+        ).execute()
+
+    # ── Wallet Positions ──────────────────────────────────
+
+    def upsert_wallet_position(self, pos: WalletPosition) -> None:
+        """Insert or update a wallet position."""
+        data = _serialize(asdict(pos))
+        data.pop("id", None)
+        self.client.table("wallet_positions").upsert(data).execute()
+
+    def get_open_positions(
+        self,
+        market_id: str | None = None,
+        wallet_address: str | None = None,
+    ) -> list[dict]:
+        """Get open positions, optionally filtered by market or wallet."""
+        query = (
+            self.client.table("wallet_positions")
+            .select("*")
+            .eq("current_status", "open")
+        )
+        if market_id:
+            query = query.eq("market_id", market_id)
+        if wallet_address:
+            query = query.eq("wallet_address", wallet_address)
+        resp = query.execute()
+        return resp.data or []
+
+    def update_position_sold(
+        self,
+        wallet_address: str,
+        market_id: str,
+        sell_amount: float,
+        sell_timestamp: datetime,
+    ) -> None:
+        """Mark a position as sold or partially sold."""
+        status = "sold" if sell_amount > 0 else "partial_sold"
+        self.client.table("wallet_positions").update({
+            "current_status": status,
+            "sell_amount": sell_amount,
+            "sell_timestamp": sell_timestamp.isoformat(),
+            "updated_at": datetime.utcnow().isoformat(),
+        }).eq("wallet_address", wallet_address).eq(
+            "market_id", market_id
+        ).execute()
+
+    # ── Wallet Categories ─────────────────────────────────
+
+    def upsert_wallet_category(self, cat: WalletCategory) -> None:
+        """Insert or update a wallet category record."""
+        data = _serialize(asdict(cat))
+        self.client.table("wallet_categories").upsert(data).execute()
+
+    def get_wallet_category(self, wallet_address: str) -> dict | None:
+        """Fetch a wallet category record."""
+        try:
+            resp = (
+                self.client.table("wallet_categories")
+                .select("*")
+                .eq("wallet_address", wallet_address)
+                .single()
+                .execute()
+            )
+            return resp.data
+        except Exception:
+            return None
+
+    def get_wallet_categories_by_type(self, category: str) -> list[dict]:
+        """Fetch all wallet category records of a given type."""
+        resp = (
+            self.client.table("wallet_categories")
+            .select("*")
+            .eq("category", category)
+            .execute()
+        )
+        return resp.data or []
 
     # ── Utility ────────────────────────────────────────────
 

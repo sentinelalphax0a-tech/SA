@@ -131,7 +131,7 @@ class ArbitrageFilter:
             return None
 
         question = market["question"]
-        tokens_a = _tokenize(question)
+        tokens_a = tokenize(question)
         if not tokens_a:
             return None
 
@@ -146,8 +146,8 @@ class ArbitrageFilter:
             if not other_q:
                 continue
 
-            tokens_b = _tokenize(other_q)
-            score = _jaccard(tokens_a, tokens_b)
+            tokens_b = tokenize(other_q)
+            score = jaccard(tokens_a, tokens_b)
 
             if score > best_score and score >= _SIMILARITY_THRESHOLD:
                 best_score = score
@@ -206,13 +206,32 @@ def _dominant_direction(trades: list[TradeEvent]) -> str:
     return "YES" if yes_total >= no_total else "NO"
 
 
-def _tokenize(question: str) -> set[str]:
+def tokenize(question: str) -> set[str]:
     """Extract meaningful lowercase tokens from a market question."""
     words = re.findall(r"[a-zA-Z0-9]+", question.lower())
     return {w for w in words if w not in _STOP_WORDS and len(w) > 1}
 
 
-def _jaccard(a: set[str], b: set[str]) -> float:
+# Month names stripped for deduplication (dates cause false negatives)
+_MONTH_NAMES = frozenset({
+    "january", "february", "march", "april", "may", "june",
+    "july", "august", "september", "october", "november", "december",
+    "jan", "feb", "mar", "apr", "jun", "jul", "aug", "sep", "oct", "nov", "dec",
+})
+
+
+def tokenize_for_dedup(question: str) -> set[str]:
+    """Tokenize stripping dates and numbers for dedup comparison.
+
+    Markets like "Will the US strike Iran before February 20?" and
+    "Will the US strike Iran before June 30?" should be treated as
+    duplicates — they differ only in dates.
+    """
+    words = re.findall(r"[a-zA-Z]+", question.lower())  # letters only
+    return {w for w in words if w not in _STOP_WORDS and w not in _MONTH_NAMES and len(w) > 1}
+
+
+def jaccard(a: set[str], b: set[str]) -> float:
     """Jaccard similarity between two token sets."""
     if not a or not b:
         return 0.0

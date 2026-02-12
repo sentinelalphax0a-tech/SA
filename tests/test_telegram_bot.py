@@ -51,16 +51,18 @@ class TestPublishAlert:
         msg_id = bot.publish_alert(_alert(star_level=5))
         assert msg_id == "42"
 
-    def test_skips_below_2_stars(self):
+    def test_publishes_1_star_during_testing(self):
+        """Testing phase: 1-star alerts are published to Telegram."""
         bot = _make_bot()
         msg_id = bot.publish_alert(_alert(star_level=1))
-        assert msg_id is None
-        bot.send_message.assert_not_called()
+        assert msg_id == "42"
+        bot.send_message.assert_called_once()
 
-    def test_skips_0_stars(self):
+    def test_publishes_0_stars_during_testing(self):
+        """Testing phase: even 0-star alerts are published."""
         bot = _make_bot()
         msg_id = bot.publish_alert(_alert(star_level=0))
-        assert msg_id is None
+        assert msg_id == "42"
 
     def test_text_contains_market_and_score(self):
         bot = _make_bot()
@@ -68,17 +70,21 @@ class TestPublishAlert:
         text = bot.send_message.call_args[0][0]
         assert "Will BTC moon?" in text
         assert "Score: 88" in text
-        assert "SMART MONEY DETECTED" in text
+        assert "SENTINEL ALPHA" in text
 
-    def test_text_has_no_filter_ids(self):
+    def test_text_shows_filter_details(self):
+        """Detailed format shows filter IDs and points for testing channel."""
         bot = _make_bot()
         alert = _alert(
             star_level=3,
-            filters_triggered=[{"id": "W01", "points": 25}],
+            filters_triggered=[
+                {"filter_id": "W01", "filter_name": "Wallet muy nueva", "points": 25, "category": "wallet", "details": "age=3d"},
+            ],
         )
         bot.publish_alert(alert)
         text = bot.send_message.call_args[0][0]
-        assert "W01" not in text
+        assert "W01" in text
+        assert "+25 pts" in text
 
     def test_uses_empty_parse_mode(self):
         """Alert text has emojis, not HTML — parse_mode should be empty."""
@@ -99,18 +105,19 @@ class TestPublishWhaleEntry:
         assert msg_id == "42"
         bot.send_message.assert_called_once()
 
-    def test_text_contains_whale(self):
+    def test_uses_detailed_format_during_testing(self):
+        """Testing phase: whale entries use detailed format (not whale format)."""
+        bot = _make_bot()
+        bot.publish_whale_entry(_alert(total_amount=50000, score=90))
+        text = bot.send_message.call_args[0][0]
+        assert "SENTINEL ALPHA" in text
+        assert "Score: 90" in text
+
+    def test_text_contains_amount(self):
         bot = _make_bot()
         bot.publish_whale_entry(_alert(total_amount=50000))
         text = bot.send_message.call_args[0][0]
-        assert "WHALE ENTRY" in text
         assert "$50,000" in text
-
-    def test_no_score_in_whale(self):
-        bot = _make_bot()
-        bot.publish_whale_entry(_alert(score=90))
-        text = bot.send_message.call_args[0][0]
-        assert "Score" not in text
 
 
 # ── publish_resolution ───────────────────────────────────────
@@ -210,33 +217,27 @@ class TestNoCredentials:
 
 
 class TestNoLeaks:
-    def test_no_filter_ids_in_any_method(self):
+    def test_no_filter_ids_in_resolution(self):
+        """Resolution (public-facing) must not expose filter IDs."""
         bot = _make_bot()
         alert = _alert(
             outcome="YES",
             star_level=3,
             filters_triggered=[
-                {"id": "W01", "points": 25},
-                {"id": "C07", "points": 60},
+                {"filter_id": "W01", "points": 25},
+                {"filter_id": "C07", "points": 60},
             ],
         )
-        bot.publish_alert(alert)
-        bot.publish_whale_entry(alert)
         bot.publish_resolution(alert)
+        text = bot.send_message.call_args[0][0]
+        assert "W01" not in text
+        assert "C07" not in text
 
-        for call in bot.send_message.call_args_list:
-            text = call[0][0]
-            assert "W01" not in text
-            assert "C07" not in text
-
-    def test_no_multiplier_in_any_method(self):
+    def test_no_multiplier_in_resolution(self):
+        """Resolution (public-facing) must not leak multiplier."""
         bot = _make_bot()
         alert = _alert(outcome="YES", star_level=3, multiplier=1.4)
-        bot.publish_alert(alert)
-        bot.publish_whale_entry(alert)
         bot.publish_resolution(alert)
-
-        for call in bot.send_message.call_args_list:
-            text = call[0][0]
-            assert "multiplier" not in text.lower()
-            assert "1.4" not in text
+        text = bot.send_message.call_args[0][0]
+        assert "multiplier" not in text.lower()
+        assert "1.4" not in text

@@ -38,7 +38,7 @@ ERC20_BALANCE_ABI = [
 ]
 
 # Rate-limit delay between Alchemy calls (seconds)
-API_DELAY = 0.5
+API_DELAY = 0.10
 # Minimum transfer value to consider (skip dust)
 MIN_TRANSFER_VALUE = 1.0
 # Max pages to fetch per _fetch_transfers call
@@ -52,6 +52,12 @@ class BlockchainClient:
         self.w3 = Web3(Web3.HTTPProvider(config.ALCHEMY_ENDPOINT))
         if not self.w3.is_connected():
             logger.warning("Failed to connect to Alchemy RPC endpoint")
+
+        # Per-scan caches to avoid redundant API calls for the same wallet
+        self._age_cache: dict[str, int | None] = {}
+        self._first_pm_cache: dict[str, bool] = {}
+        self._balance_cache: dict[str, float] = {}
+        self._funding_cache: dict[str, list[WalletFunding]] = {}
 
     # ── Internal helper ─────────────────────────────────────
 
@@ -109,8 +115,8 @@ class BlockchainClient:
                 logger.error("alchemy_getAssetTransfers failed: %s", e)
                 break
 
-            result = resp.get("result", {})
-            transfers = result.get("transfers", [])
+            result = resp.get("result") or {}
+            transfers = result.get("transfers") or []
             all_transfers.extend(transfers)
 
             page_key = result.get("pageKey")
@@ -141,7 +147,7 @@ class BlockchainClient:
 
             timestamps: list[datetime] = []
             for tx in incoming + outgoing:
-                ts_str = tx.get("metadata", {}).get("blockTimestamp")
+                ts_str = (tx.get("metadata") or {}).get("blockTimestamp")
                 if ts_str:
                     timestamps.append(
                         datetime.fromisoformat(ts_str.replace("Z", "+00:00"))
@@ -157,11 +163,17 @@ class BlockchainClient:
 
     def get_wallet_age_days(self, address: str) -> int | None:
         """Get the age of a wallet in days from its first transaction."""
+        key = address.lower()
+        if key in self._age_cache:
+            return self._age_cache[key]
         first_tx = self.get_first_transaction_timestamp(address)
         if first_tx is None:
+            self._age_cache[key] = None
             return None
         now = datetime.now(timezone.utc)
-        return (now - first_tx).days
+        age = (now - first_tx).days
+        self._age_cache[key] = age
+        return age
 
     def get_first_tx_contracts(self, address: str) -> list[str]:
         """Return destination addresses from the wallet's first outgoing txs.
@@ -181,7 +193,7 @@ class BlockchainClient:
                 to_addr = tx.get("to")
                 if to_addr:
                     contracts.append(to_addr.lower())
-                raw = tx.get("rawContract", {})
+                raw = tx.get("rawContract") or {}
                 contract_addr = raw.get("address")
                 if contract_addr:
                     contracts.append(contract_addr.lower())
@@ -193,8 +205,13 @@ class BlockchainClient:
 
     def is_first_tx_polymarket(self, address: str) -> bool:
         """Check if the wallet's first transactions target Polymarket contracts."""
+        key = address.lower()
+        if key in self._first_pm_cache:
+            return self._first_pm_cache[key]
         contracts = self.get_first_tx_contracts(address)
-        return any(c in POLYMARKET_CONTRACTS for c in contracts)
+        result = any(c in POLYMARKET_CONTRACTS for c in contracts)
+        self._first_pm_cache[key] = result
+        return result
 
     def get_funding_sources(
         self, address: str, max_hops: int = 2
@@ -203,6 +220,10 @@ class BlockchainClient:
         if not Web3.is_address(address):
             logger.warning("Invalid address: %s", address)
             return []
+
+        key = address.lower()
+        if key in self._funding_cache:
+            return self._funding_cache[key]
 
         results: list[WalletFunding] = []
         visited: set[str] = set()
@@ -242,7 +263,7 @@ class BlockchainClient:
                             total_value += float(val)
                         except (ValueError, TypeError):
                             pass
-                    ts_str = tx.get("metadata", {}).get("blockTimestamp")
+                    ts_str = (tx.get("metadata") or {}).get("blockTimestamp")
                     if ts_str:
                         ts = datetime.fromisoformat(ts_str.replace("Z", "+00:00"))
                         if latest_ts is None or ts > latest_ts:
@@ -269,6 +290,7 @@ class BlockchainClient:
                 if not is_exchange and hop < max_hops and sender not in visited:
                     queue.append((sender, hop + 1))
 
+        self._funding_cache[key] = results
         return results
 
     def get_balance(self, address: str) -> float:
@@ -276,6 +298,10 @@ class BlockchainClient:
         if not Web3.is_address(address):
             logger.warning("Invalid address: %s", address)
             return 0.0
+
+        key = address.lower()
+        if key in self._balance_cache:
+            return self._balance_cache[key]
 
         try:
             checksum = Web3.to_checksum_address(address)
@@ -287,6 +313,7 @@ class BlockchainClient:
                 )
                 raw = contract.functions.balanceOf(checksum).call()
                 total += raw / 1e6  # USDC has 6 decimals
+            self._balance_cache[key] = total
             return total
 
         except Exception as e:

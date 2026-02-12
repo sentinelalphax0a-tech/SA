@@ -150,7 +150,22 @@ class TwitterBot:
                         config.MAX_TWEETS_PER_DAY)
             return tweet_id
         except Exception as e:
-            logger.error("Failed to publish tweet: %s", e)
+            # Detect 401 Unauthorized → disable bot for rest of session
+            is_401 = False
+            try:
+                import tweepy
+                if isinstance(e, tweepy.errors.Unauthorized):
+                    is_401 = True
+            except ImportError:
+                pass
+            if not is_401 and "401" in str(e):
+                is_401 = True
+
+            if is_401:
+                logger.warning("Twitter 401 Unauthorized — disabling bot for this session")
+                self.client = None
+            else:
+                logger.error("Failed to publish tweet: %s", e)
             return None
 
     def _record_tweet(self) -> None:

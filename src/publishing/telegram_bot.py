@@ -101,26 +101,29 @@ class TelegramBot:
     # ── High-level publish methods ────────────────────────────
 
     def publish_alert(self, alert: Alert) -> str | None:
-        """Publish a smart money alert to Telegram (star_level >= 2).
+        """Publish a smart money alert to Telegram.
+
+        Testing phase: publishes ALL star levels (including 1-star) using
+        detailed format (filters + multipliers).  For public launch,
+        restore the star >= 2 gate and switch to format_telegram_alert.
 
         Returns:
             message_id on success, None otherwise.
         """
-        star = alert.star_level or 0
-        if star < 2:
-            logger.debug("Skipping TG publish: star_level %d < 2", star)
-            return None
-
-        text = self.formatter.format_telegram_alert(alert)
+        text = self.formatter.format_telegram_detailed(alert)
         return self.send_message(text, parse_mode="")
 
     def publish_whale_entry(self, alert: Alert) -> str | None:
         """Publish a whale entry alert to Telegram (B19, always published).
 
+        Testing phase: uses detailed format (same as regular alerts) so we
+        can evaluate filter quality.  For public launch, switch back to
+        format_whale_entry.
+
         Returns:
             message_id on success, None otherwise.
         """
-        text = self.formatter.format_whale_entry(alert)
+        text = self.formatter.format_telegram_detailed(alert)
         return self.send_message(text, parse_mode="")
 
     def publish_resolution(self, alert: Alert) -> str | None:
@@ -146,6 +149,64 @@ class TelegramBot:
         if chart_path and os.path.isfile(chart_path):
             return self.send_photo(chart_path, caption=text)
         return self.send_message(text, parse_mode="HTML")
+
+    # ── Sell notifications ──────────────────────────────────
+
+    def publish_sell_notification(self, sell_event: dict) -> str | None:
+        """Publish an individual sell notification to Telegram.
+
+        Returns:
+            message_id on success, None otherwise.
+        """
+        if sell_event.get("type") == "coordinated":
+            text = self.formatter.format_coordinated_sell(sell_event)
+        else:
+            text = self.formatter.format_sell_notification(sell_event)
+        return self.send_message(text, parse_mode="")
+
+    # ── Multi-channel ──────────────────────────────────────
+
+    def send_to_channel(
+        self, channel_id: str, text: str, parse_mode: str = "HTML"
+    ) -> str | None:
+        """Send a message to a specific Telegram channel.
+
+        Returns the message_id as string, or None on failure.
+        """
+        if not self.token or not channel_id:
+            return None
+        try:
+            resp = requests.post(
+                f"{self.base_url}/sendMessage",
+                json={
+                    "chat_id": channel_id,
+                    "text": text,
+                    "parse_mode": parse_mode,
+                },
+                timeout=10,
+            )
+            resp.raise_for_status()
+            data = resp.json()
+            if not data.get("ok"):
+                logger.error("Telegram API error: %s", data.get("description"))
+                return None
+            msg_id = str(data["result"]["message_id"])
+            logger.info("Telegram message sent to %s: %s", channel_id, msg_id)
+            return msg_id
+        except Exception as e:
+            logger.error("send_to_channel failed: %s", e)
+            return None
+
+    def publish_to_public(self, alert: Alert) -> str | None:
+        """Publish a short-format alert to the public channel (stars >= 3).
+
+        Uses format_telegram_alert (no filter details, no scoring internals).
+        """
+        public_id = config.TELEGRAM_PUBLIC_CHANNEL_ID
+        if not public_id:
+            return None
+        text = self.formatter.format_telegram_alert(alert)
+        return self.send_to_channel(public_id, text, parse_mode="")
 
     # ── Diagnostics ───────────────────────────────────────────
 

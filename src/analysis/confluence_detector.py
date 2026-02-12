@@ -17,6 +17,7 @@ from datetime import datetime, timedelta, timezone
 
 from src import config
 from src.database.models import FilterResult, FundingLink
+from src.scanner.blockchain_client import POLYMARKET_CONTRACTS
 
 logger = logging.getLogger(__name__)
 
@@ -51,6 +52,22 @@ class ConfluenceDetector:
 
     def __init__(self, db_client) -> None:
         self.db = db_client
+        # Senders seen in the last detect() call — used by main.py for
+        # cross-market super-sender tracking.
+        self.last_senders_seen: set[str] = set()
+
+    # ── Sender exclusion ─────────────────────────────────────
+
+    @staticmethod
+    def _build_default_excluded() -> set[str]:
+        """Addresses that should ALWAYS be excluded from sender analysis.
+
+        Includes Polymarket contracts and known exchanges — these are not
+        insider intermediaries.
+        """
+        excluded = {a.lower() for a in POLYMARKET_CONTRACTS}
+        excluded.update(a.lower() for a in config.KNOWN_EXCHANGES)
+        return excluded
 
     # ── Main entry point ─────────────────────────────────────
 
@@ -59,6 +76,7 @@ class ConfluenceDetector:
         market_id: str,
         direction: str,
         wallets_with_scores: list[dict],
+        excluded_senders: set[str] | None = None,
     ) -> list[FilterResult]:
         """Run all C filters for wallets active in a market.
 
@@ -66,11 +84,14 @@ class ConfluenceDetector:
             market_id: The market being evaluated.
             direction: Consensus direction to check ("YES" or "NO").
             wallets_with_scores: List of wallet dicts active in this market.
+            excluded_senders: Senders to exclude from C03/C04/C06/C07
+                (super-senders detected across markets).
 
         Returns:
             List of triggered FilterResult objects.
         """
         if not wallets_with_scores:
+            self.last_senders_seen = set()
             return []
 
         results: list[FilterResult] = []
@@ -81,8 +102,25 @@ class ConfluenceDetector:
         # Fetch funding data from DB for all wallets
         funding_map = self._fetch_funding_map(wallets_with_scores)
 
-        # Build sender → {funded wallet addresses} index
-        sender_to_wallets = self._build_sender_index(funding_map)
+        # Build raw sender → {funded wallet addresses} index
+        raw_sender_to_wallets = self._build_sender_index(funding_map)
+
+        # Expose raw senders for cross-market tracking
+        self.last_senders_seen = set(raw_sender_to_wallets.keys())
+
+        # Filter out Polymarket contracts, known exchanges, and super-senders
+        all_excluded = self._build_default_excluded()
+        if excluded_senders:
+            all_excluded.update(excluded_senders)
+
+        sender_to_wallets = {
+            s: ws for s, ws in raw_sender_to_wallets.items()
+            if s.lower() not in all_excluded
+        }
+
+        if sender_to_wallets != raw_sender_to_wallets:
+            removed = len(raw_sender_to_wallets) - len(sender_to_wallets)
+            logger.debug("Excluded %d senders from confluence analysis", removed)
 
         # C03 / C04 — shared funding source (mutually exclusive)
         results.extend(

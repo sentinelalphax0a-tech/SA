@@ -39,27 +39,28 @@ class WalletAnalyzer:
         self.db = db
         self.chain = chain
 
+    # Minimum points from basic (non-funding) checks before we spend
+    # API calls on funding source analysis.
+    _MIN_BASIC_SCORE_FOR_FUNDING = 30
+
     def analyze(
         self, wallet_address: str, trades: list[TradeEvent]
     ) -> list[FilterResult]:
         """Run all W and O filters for a wallet.
 
-        Fetches on-chain data, builds a Wallet object, evaluates filters,
-        persists wallet + funding to DB.
+        Two-phase approach to reduce API calls:
+          Phase 1: Cheap checks (age, market count, first_tx, balance).
+          Phase 2: Expensive funding check — only if phase 1 score >= 30.
 
         Args:
             wallet_address: Polygon address to analyze.
             trades: Recent trades made by this wallet.
         """
-        # --- Build Wallet from on-chain + trade data ---
+        # --- Phase 1: Cheap on-chain checks ---
         age_days = self.chain.get_wallet_age_days(wallet_address)
         is_first_pm = self.chain.is_first_tx_polymarket(wallet_address)
         balance = self.chain.get_balance(wallet_address)
-        funding = self.chain.get_funding_sources(
-            wallet_address, max_hops=config.MAX_FUNDING_HOPS
-        )
 
-        # Count distinct markets from trades
         market_ids = {t.market_id for t in trades}
 
         wallet = Wallet(
@@ -69,20 +70,28 @@ class WalletAnalyzer:
             is_first_tx_pm=is_first_pm,
         )
 
-        # --- Persist funding sources to DB for confluence_detector ---
-        for f in funding:
-            try:
-                self.db.insert_funding(f)
-            except Exception as e:
-                logger.debug("insert_funding skipped (duplicate?): %s", e)
-
-        # --- Evaluate filters ---
         results: list[FilterResult] = []
         results.extend(self._check_wallet_age(wallet))
         results.extend(self._check_market_count(wallet))
         results.extend(self._check_first_tx_pm(wallet))
         results.extend(self._check_round_balance(wallet, balance))
-        results.extend(self._check_origin(wallet, funding))
+
+        # --- Phase 2: Expensive funding check (only if basic score warrants it) ---
+        basic_score = sum(f.points for f in results)
+        funding: list[WalletFunding] = []
+
+        if basic_score >= self._MIN_BASIC_SCORE_FOR_FUNDING:
+            funding = self.chain.get_funding_sources(
+                wallet_address, max_hops=config.MAX_FUNDING_HOPS
+            )
+            if funding:
+                try:
+                    self.db.insert_funding_batch(funding)
+                except Exception as e:
+                    logger.debug("insert_funding_batch failed: %s", e)
+
+            results.extend(self._check_origin(wallet, funding))
+            results.extend(self._check_mixer_funding(funding))
 
         # --- Persist wallet to DB ---
         try:
@@ -141,6 +150,24 @@ class WalletAnalyzer:
             high = target * (1 + config.ROUND_BALANCE_TOLERANCE)
             if low <= balance <= high:
                 return [_fr(config.FILTER_W11, f"balance=${balance:,.0f}≈${target:,.0f}")]
+        return []
+
+    # ── COORD04 — Mixer/privacy protocol funding ──────────
+
+    def _check_mixer_funding(
+        self, funding: list[WalletFunding] | None
+    ) -> list[FilterResult]:
+        """COORD04 — Funded from Tornado Cash / Railgun."""
+        if not funding:
+            return []
+        for f in funding:
+            sender = f.sender_address.lower()
+            mixer_name = config.MIXER_ADDRESSES.get(sender)
+            if mixer_name:
+                return [_fr(
+                    config.FILTER_COORD04,
+                    f"mixer={mixer_name} hop={f.hop_level}",
+                )]
         return []
 
     # ── O01 / O02 / O03 — Origin & funding recency ────────

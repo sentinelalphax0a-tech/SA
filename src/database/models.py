@@ -95,6 +95,7 @@ class Alert:
     published_telegram: bool = False
     tweet_id: str | None = None
     telegram_msg_id: str | None = None
+    deduplicated: bool = False
     outcome: str = "pending"
     resolved_at: datetime | None = None
     created_at: datetime = field(default_factory=datetime.utcnow)
@@ -261,3 +262,59 @@ class FundingLink:
     time_spread_hours: float = 0.0
     similar_amounts: bool = False
     is_distribution: bool = False
+
+
+# ============================================================
+# ALERT TRACKING (resolution tracking)
+# ============================================================
+
+@dataclass
+class AlertTracking:
+    """Tracks an alert's outcome for resolution checks."""
+    alert_id: int
+    market_id: str
+    direction: str
+    odds_at_alert: float
+    id: int | None = None
+    current_odds: float | None = None
+    outcome: str = "pending"  # pending | correct | incorrect
+    resolved_at: datetime | None = None
+    created_at: datetime = field(default_factory=datetime.utcnow)
+
+
+# ============================================================
+# WALLET POSITION (sell monitoring)
+# ============================================================
+
+@dataclass
+class WalletPosition:
+    """Tracks a wallet's open position in a market."""
+    wallet_address: str
+    market_id: str
+    direction: str
+    total_amount: float
+    entry_odds: float
+    id: int | None = None
+    current_status: str = "open"  # open | sold | partial_sold
+    sell_amount: float = 0.0
+    sell_timestamp: datetime | None = None
+    alert_id: int | None = None
+    created_at: datetime = field(default_factory=datetime.utcnow)
+    updated_at: datetime = field(default_factory=datetime.utcnow)
+
+
+# ============================================================
+# WALLET CATEGORY (win rate + specialization tracking)
+# ============================================================
+
+@dataclass
+class WalletCategory:
+    """Tracks wallet performance and specialization."""
+    wallet_address: str
+    category: str = "unknown"  # unknown | smart_money | whale | scalper | bot | degen
+    win_rate: float | None = None
+    markets_resolved: int = 0
+    markets_won: int = 0
+    specialty_tags: list[str] | None = None
+    total_tracked: float = 0.0
+    updated_at: datetime = field(default_factory=datetime.utcnow)

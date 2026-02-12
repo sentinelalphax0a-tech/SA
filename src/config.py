@@ -35,6 +35,9 @@ TWITTER_ACCESS_SECRET: str = os.getenv("TWITTER_ACCESS_SECRET", "")
 # Telegram
 TELEGRAM_BOT_TOKEN: str = os.getenv("TELEGRAM_BOT_TOKEN", "")
 TELEGRAM_CHANNEL_ID: str = os.getenv("TELEGRAM_CHANNEL_ID", "")
+TELEGRAM_PRIVATE_CHANNEL_ID: str = os.getenv("TELEGRAM_PRIVATE_CHANNEL_ID", "")
+TELEGRAM_PUBLIC_CHANNEL_ID: str = os.getenv("TELEGRAM_PUBLIC_CHANNEL_ID", "")
+TELEGRAM_VIP_CHANNEL_ID: str = os.getenv("TELEGRAM_VIP_CHANNEL_ID", "")
 
 # ============================================================
 # SCAN & INGESTION THRESHOLDS
@@ -47,6 +50,11 @@ ACCUMULATION_WINDOW_DAYS_7: int = 7
 ACCUMULATION_WINDOW_DAYS_14: int = 14
 SCAN_INTERVAL_MINUTES: int = int(os.getenv("SCAN_INTERVAL_MINUTES", "30"))
 SCAN_LOOKBACK_MINUTES: int = 35  # slightly > interval to avoid gaps
+SCAN_TIMEOUT_SECONDS: int = int(os.getenv("SCAN_TIMEOUT_SECONDS", "480"))  # 8 min
+MARKET_TIMEOUT_SECONDS: int = int(os.getenv("MARKET_TIMEOUT_SECONDS", "45"))  # per-market
+MAX_WALLETS_PER_MARKET: int = int(os.getenv("MAX_WALLETS_PER_MARKET", "10"))  # top N by volume
+MARKET_MIN_VOLUME_24H: float = float(os.getenv("MARKET_MIN_VOLUME_24H", "1000"))
+MARKET_SCAN_CAP: int = int(os.getenv("MARKET_SCAN_CAP", "100"))
 
 # ============================================================
 # ODDS RANGE
@@ -100,15 +108,15 @@ STAR_PUBLISH_MAP: dict[int, dict[str, bool]] = {
 FILTER_W01 = {"id": "W01", "name": "Wallet muy nueva", "points": 25, "category": "wallet"}
 FILTER_W02 = {"id": "W02", "name": "Wallet nueva", "points": 20, "category": "wallet"}
 FILTER_W03 = {"id": "W03", "name": "Wallet reciente", "points": 15, "category": "wallet"}
-FILTER_W04 = {"id": "W04", "name": "Solo 1 mercado", "points": 25, "category": "wallet"}
+FILTER_W04 = {"id": "W04", "name": "Solo 1 mercado", "points": 10, "category": "wallet"}
 FILTER_W05 = {"id": "W05", "name": "Solo 2-3 mercados", "points": 15, "category": "wallet"}
-FILTER_W09 = {"id": "W09", "name": "Primera tx = Polymarket", "points": 20, "category": "wallet"}
+FILTER_W09 = {"id": "W09", "name": "Primera tx = Polymarket", "points": 5, "category": "wallet"}
 FILTER_W11 = {"id": "W11", "name": "Balance redondo", "points": 3, "category": "wallet"}
 
 # --- Origin filters (O) — 3 filters ---
-FILTER_O01 = {"id": "O01", "name": "Origen exchange", "points": 15, "category": "origin"}
+FILTER_O01 = {"id": "O01", "name": "Origen exchange", "points": 5, "category": "origin"}
 FILTER_O02 = {"id": "O02", "name": "Fondeo reciente", "points": 10, "category": "origin"}
-FILTER_O03 = {"id": "O03", "name": "Fondeo muy reciente", "points": 15, "category": "origin"}
+FILTER_O03 = {"id": "O03", "name": "Fondeo muy reciente", "points": 5, "category": "origin"}
 
 # --- Behavior filters (B) — 14 filters ---
 FILTER_B01 = {"id": "B01", "name": "Acumulación goteo", "points": 20, "category": "behavior"}
@@ -130,6 +138,9 @@ FILTER_B19B = {"id": "B19b", "name": "Entrada muy grande", "points": 30, "catego
 FILTER_B19C = {"id": "B19c", "name": "Entrada masiva", "points": 40, "category": "behavior"}
 # Old wallet new in PM
 FILTER_B20 = {"id": "B20", "name": "Vieja nueva en PM", "points": 20, "category": "behavior"}
+# Position sizing (B23a-b mutually exclusive)
+FILTER_B23A = {"id": "B23a", "name": "Posición significativa", "points": 15, "category": "behavior"}
+FILTER_B23B = {"id": "B23b", "name": "Posición dominante", "points": 30, "category": "behavior"}
 
 # --- Confluence filters (C) — 7 filters ---
 FILTER_C01 = {"id": "C01", "name": "Confluencia básica", "points": 25, "category": "confluence"}
@@ -140,10 +151,18 @@ FILTER_C05 = {"id": "C05", "name": "Fondeo temporal", "points": 30, "category": 
 FILTER_C06 = {"id": "C06", "name": "Monto similar", "points": 15, "category": "confluence"}
 FILTER_C07 = {"id": "C07", "name": "Red de distribución", "points": 60, "category": "confluence"}
 
-# --- Market filters (M) — 3 filters ---
+# --- Market filters (M) — 5 filters ---
 FILTER_M01 = {"id": "M01", "name": "Volumen anómalo", "points": 15, "category": "market"}
 FILTER_M02 = {"id": "M02", "name": "Odds estables rotos", "points": 20, "category": "market"}
 FILTER_M03 = {"id": "M03", "name": "Baja liquidez", "points": 10, "category": "market"}
+FILTER_M04A = {"id": "M04a", "name": "Concentración moderada", "points": 15, "category": "market"}
+FILTER_M04B = {"id": "M04b", "name": "Concentración alta", "points": 25, "category": "market"}
+FILTER_M05A = {"id": "M05a", "name": "Deadline <72h", "points": 10, "category": "market"}
+FILTER_M05B = {"id": "M05b", "name": "Deadline <24h", "points": 15, "category": "market"}
+FILTER_M05C = {"id": "M05c", "name": "Deadline <6h", "points": 25, "category": "market"}
+
+# --- Coordination extra filter ---
+FILTER_COORD04 = {"id": "COORD04", "name": "Fondeo via mixer", "points": 50, "category": "confluence"}
 
 # --- Negative filters (N) — 8 filters ---
 FILTER_N01 = {"id": "N01", "name": "Bot", "points": -40, "category": "negative"}
@@ -154,6 +173,11 @@ FILTER_N05 = {"id": "N05", "name": "Copy-trading", "points": -25, "category": "n
 FILTER_N06A = {"id": "N06a", "name": "Degen leve", "points": -5, "category": "negative"}
 FILTER_N06B = {"id": "N06b", "name": "Degen moderado", "points": -15, "category": "negative"}
 FILTER_N06C = {"id": "N06c", "name": "Degen fuerte", "points": -30, "category": "negative"}
+# Scalper/arb rápido (N07a-b mutually exclusive)
+FILTER_N07A = {"id": "N07a", "name": "Scalper leve", "points": -20, "category": "negative"}
+FILTER_N07B = {"id": "N07b", "name": "Scalper serial", "points": -40, "category": "negative"}
+# Anti-bot evasion
+FILTER_N08 = {"id": "N08", "name": "Anti-bot evasión", "points": 25, "category": "behavior"}
 
 # Master registry: id → filter dict
 ALL_FILTERS: dict[str, dict] = {
@@ -166,12 +190,14 @@ ALL_FILTERS: dict[str, dict] = {
         FILTER_B16, FILTER_B17,
         FILTER_B18A, FILTER_B18B, FILTER_B18C, FILTER_B18D, FILTER_B18E,
         FILTER_B19A, FILTER_B19B, FILTER_B19C,
-        FILTER_B20,
+        FILTER_B20, FILTER_B23A, FILTER_B23B,
         FILTER_C01, FILTER_C02, FILTER_C03, FILTER_C04, FILTER_C05,
-        FILTER_C06, FILTER_C07,
+        FILTER_C06, FILTER_C07, FILTER_COORD04,
         FILTER_M01, FILTER_M02, FILTER_M03,
+        FILTER_M04A, FILTER_M04B, FILTER_M05A, FILTER_M05B, FILTER_M05C,
         FILTER_N01, FILTER_N02, FILTER_N03, FILTER_N04, FILTER_N05,
         FILTER_N06A, FILTER_N06B, FILTER_N06C,
+        FILTER_N07A, FILTER_N07B, FILTER_N08,
     ]
 }
 
@@ -181,9 +207,13 @@ MUTUALLY_EXCLUSIVE_GROUPS: list[list[str]] = [
     ["W04", "W05"],              # market count tiers
     ["B18a", "B18b", "B18c", "B18d"],  # accumulation tiers
     ["B19a", "B19b", "B19c"],    # whale entry tiers
+    ["B23a", "B23b"],            # position sizing tiers
     ["C01", "C02"],              # confluence direction tiers
     ["C03", "C04"],              # funding source tiers
+    ["M04a", "M04b"],            # volume concentration tiers
+    ["M05a", "M05b", "M05c"],   # deadline proximity tiers
     ["N06a", "N06b", "N06c"],    # degen tiers
+    ["N07a", "N07b"],            # scalper tiers
 ]
 
 # Filters that trigger Telegram-only whale alerts (bypass normal routing)
@@ -239,6 +269,7 @@ ROUND_BALANCES: list[float] = [5000.0, 10000.0, 50000.0]
 ROUND_BALANCE_TOLERANCE: float = 0.01  # ±1%
 
 # Confluence thresholds
+SENDER_MAX_MARKETS: int = 3               # Super-sender: exclude if funding wallets in >3 markets
 CONFLUENCE_BASIC_MIN_WALLETS: int = 3     # C01: 3+ wallets
 CONFLUENCE_BASIC_WINDOW_HOURS: int = 48
 CONFLUENCE_STRONG_MIN_WALLETS: int = 5    # C02: 5+ wallets
@@ -253,6 +284,31 @@ VOLUME_ANOMALY_MULTIPLIER: float = 2.0    # M01: vol 24h > 2x avg 7d
 ODDS_STABLE_HOURS: int = 48              # M02: stable > 48h
 ODDS_BREAK_THRESHOLD: float = 0.10       # M02: move > 10%
 LOW_LIQUIDITY_THRESHOLD: float = 100000.0  # M03: < $100k
+
+# Volume concentration thresholds (M04)
+VOLUME_CONCENTRATION_MODERATE: float = 0.60   # M04a: top 3 wallets > 60%
+VOLUME_CONCENTRATION_HIGH: float = 0.80       # M04b: top 3 wallets > 80%
+
+# Deadline proximity thresholds (M05) — hours until resolution
+DEADLINE_72H: int = 72     # M05a
+DEADLINE_24H: int = 24     # M05b
+DEADLINE_6H: int = 6       # M05c
+
+# Position sizing thresholds (B23)
+POSITION_SIGNIFICANT_MIN: float = 0.20   # B23a: 20-50% of balance
+POSITION_SIGNIFICANT_MAX: float = 0.50
+POSITION_DOMINANT_MIN: float = 0.50      # B23b: >50% of balance
+
+# Scalper thresholds (N07)
+SCALPER_FLIP_HOURS: int = 2              # N07a: buy+sell in <2h
+SCALPER_SERIAL_MIN_MARKETS: int = 3      # N07b: flip in 3+ markets
+
+# Sell monitoring
+SELL_COORDINATED_WINDOW_HOURS: int = 4   # 2+ wallets sell within 4h = coordinated
+SELL_COORDINATED_MIN_WALLETS: int = 2
+
+# Anti-bot evasion threshold (N08)
+ANTI_BOT_AMOUNT_CV_MAX: float = 0.10     # N08: coefficient of variation of amounts < 10%
 
 # Negative thresholds
 BOT_INTERVAL_STD_THRESHOLD: float = 1.0   # N01: std_dev ≈ 0
@@ -286,7 +342,67 @@ KNOWN_EXCHANGES: dict[str, str] = {
 }
 
 # ============================================================
-# SCORING MULTIPLIER PATTERNS — 6 patterns
+# SCORING — NEW SYSTEM (replaces old multiplier patterns)
+# ============================================================
+
+# Map old filter categories → new scoring categories
+OLD_TO_NEW_CATEGORY: dict[str, str] = {
+    "wallet": "ACCUMULATION",
+    "origin": "ACCUMULATION",
+    "behavior": "COORDINATION",
+    "confluence": "COORDINATION",
+    "market": "TIMING",
+    "negative": "MARKET",
+}
+
+# New star thresholds (evaluated top-down)
+NEW_STAR_THRESHOLDS: list[tuple[int, int]] = [
+    (220, 5),
+    (150, 4),
+    (100, 3),
+    (70, 2),
+    (40, 1),
+]
+
+# Amount-based multiplier (applied to raw score before star assignment)
+AMOUNT_MULTIPLIERS: list[tuple[float, float]] = [
+    (50_000, 1.5),
+    (20_000, 1.3),
+    (10_000, 1.2),
+    (5_000, 1.1),
+    (1_000, 1.0),
+    (500, 0.8),
+    (0, 0.5),
+]
+
+# Sniper vs Shotgun — wallet market diversity multiplier
+DIVERSITY_SNIPER_MAX_MARKETS: int = 3       # <=3 markets → sniper (x1.2)
+DIVERSITY_SNIPER_MULTIPLIER: float = 1.2
+DIVERSITY_SHOTGUN_MIN_MARKETS: int = 10     # >10 markets → shotgun (x0.7)
+DIVERSITY_SHOTGUN_MULTIPLIER: float = 0.7
+DIVERSITY_SUPER_SHOTGUN_MIN: int = 20       # >20 markets → super shotgun (x0.5)
+DIVERSITY_SUPER_SHOTGUN_MULTIPLIER: float = 0.5
+
+# Star validation — stars may be downgraded if requirements not met
+STAR_VALIDATION: dict[int, dict] = {
+    3: {"min_categories": 2},
+    4: {"min_categories": 2, "min_amount": 5_000},
+    5: {"min_categories": 3, "min_amount": 10_000, "requires_coord": True},
+}
+
+# Known mixer/privacy protocol addresses on Polygon (lowercased)
+MIXER_ADDRESSES: dict[str, str] = {
+    "0x1e34a77868e19a6647b3f7c4f1c4175d6ce5986f": "Tornado Cash (Polygon)",
+    "0xba214c1c1928a32bffe790263e38b4af9bfcd659": "Tornado Cash (Polygon)",
+    "0xdf231d99ff8b6c6cbf44e02362e760185973813d": "Tornado Cash (Polygon)",
+    "0xaf4c0b70b2ea9fb7487c7cbb37ada259579fe040": "Tornado Cash (Polygon)",
+    "0x94a1b5cdb22c43faab4abeb5c74999895464ddba": "Tornado Cash (Polygon)",
+    "0xee9fb4f12d819bbab533e2b3866cdb9490f77ab2": "Railgun (Polygon)",
+    "0x19ffac1a86f13b85cc09e42570d95a7b1e031012": "Railgun (Polygon)",
+}
+
+# ============================================================
+# LEGACY MULTIPLIER PATTERNS (kept for reference, no longer used by scoring)
 # ============================================================
 
 MULTIPLIER_PATTERNS: list[dict] = [
@@ -351,3 +467,25 @@ POLYMARKET_GAMMA_BASE_URL = "https://gamma-api.polymarket.com"
 
 # Market categories to scan
 MARKET_CATEGORIES: list[str] = ["politics", "economics", "geopolitics"]
+
+# Only scan markets in these categories (case-sensitive as returned by API)
+MARKET_RELEVANT_CATEGORIES: set[str] = {
+    "Politics", "Economics", "Corporate", "Crypto", "Geopolitics",
+    "politics", "economics", "corporate", "crypto", "geopolitics",
+}
+
+# Blacklisted terms — markets whose question contains any of these are skipped
+MARKET_BLACKLIST_TERMS: list[str] = [
+    "tweet", "twitter", "follower", "subscriber", "tiktok", "instagram",
+    "youtube", "stream", "movie", "album", "grammy", "oscar", "emmy",
+    "nfl", "nba", "mlb", "nhl", "premier league", "champions league",
+    "la liga", "serie a", "bundesliga", "world cup",
+    "weather", "temperature", "rain", "hurricane",
+    "dating", "married", "baby", "divorce",
+    "mrbeast", "kardashian", "celebrity",
+    # Daily/binary speculation markets (not insider trading)
+    "up or down", "daily", "12pm et", "4pm et",
+    "over/under", "above or below",
+    # Counting/metrics markets
+    "how many", "number of", "count of",
+]

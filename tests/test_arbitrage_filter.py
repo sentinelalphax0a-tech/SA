@@ -5,8 +5,8 @@ from datetime import datetime, timezone
 from src.analysis.arbitrage_filter import (
     ArbitrageFilter,
     _dominant_direction,
-    _tokenize,
-    _jaccard,
+    tokenize,
+    jaccard,
 )
 from src.database.models import TradeEvent
 
@@ -249,8 +249,8 @@ class TestHelpers:
         ]
         assert _dominant_direction(trades) == "YES"
 
-    def test_tokenize(self):
-        tokens = _tokenize("Will Trump win the 2024 election?")
+    def testtokenize(self):
+        tokens = tokenize("Will Trump win the 2024 election?")
         assert "trump" in tokens
         assert "2024" in tokens
         assert "election" in tokens
@@ -259,15 +259,15 @@ class TestHelpers:
 
     def test_jaccard_identical(self):
         a = {"trump", "win", "election"}
-        assert _jaccard(a, a) == 1.0
+        assert jaccard(a, a) == 1.0
 
     def test_jaccard_disjoint(self):
         a = {"trump", "win"}
         b = {"bitcoin", "price"}
-        assert _jaccard(a, b) == 0.0
+        assert jaccard(a, b) == 0.0
 
     def test_jaccard_partial(self):
         a = {"trump", "win", "election", "2024"}
         b = {"trump", "lose", "election", "2024"}
-        score = _jaccard(a, b)
+        score = jaccard(a, b)
         assert 0.5 < score < 1.0  # 3 shared out of 5 unique = 0.6

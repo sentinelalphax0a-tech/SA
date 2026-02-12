@@ -1,0 +1,30 @@
+name: Daily Resolution Check
+
+on:
+  schedule:
+    - cron: "0 0 * * *"  # Daily at 00:00 UTC
+  workflow_dispatch:       # Manual trigger
+
+jobs:
+  check-resolutions:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Run resolution checker
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHANNEL_ID: ${{ secrets.TELEGRAM_CHANNEL_ID }}
+          TELEGRAM_PRIVATE_CHANNEL_ID: ${{ secrets.TELEGRAM_PRIVATE_CHANNEL_ID }}
+        run: python -m src.scripts.check_resolutions

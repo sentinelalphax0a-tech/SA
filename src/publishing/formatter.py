@@ -14,6 +14,7 @@ Only show: market, odds, amount, wallets, stars.
 
 import logging
 
+from src import config
 from src.database.models import Alert
 
 logger = logging.getLogger(__name__)
@@ -95,6 +96,71 @@ class AlertFormatter:
             f"\u26a1 {stars} (Score: {alert.score})",
             "\u26a0\ufe0f DYOR",
         ])
+
+        return "\n".join(lines)
+
+    # ── Telegram DETAILED (testing channel) ──────────────────
+
+    def format_telegram_detailed(self, alert: Alert) -> str:
+        """Format a detailed alert for the Telegram testing channel.
+
+        Shows all triggered filters with points, multipliers, and top wallets.
+        """
+        stars = self._star_emoji(alert.star_level or 0)
+        odds_str = f"{alert.odds_at_alert:.2f}" if alert.odds_at_alert is not None else "N/A"
+        alert_num = alert.id or "?"
+
+        lines = [
+            f"\U0001f50d SENTINEL ALPHA \u2014 ALERT #{alert_num}",
+            "\u2500" * 26,
+            "",
+            f'\U0001f4cc Market: "{alert.market_question}"',
+            f"\U0001f4ca Direction: {alert.direction} | Odds: {odds_str}",
+            f"\u2b50 Rating: {alert.star_level} stars | Score: {alert.score}",
+            "",
+        ]
+
+        # Filters triggered
+        if alert.filters_triggered:
+            lines.append("\U0001f9e9 FILTERS TRIGGERED:")
+            for f in alert.filters_triggered:
+                fid = f.get("filter_id", "?")
+                pts = f.get("points", 0)
+                name = f.get("filter_name", "")
+                details = f.get("details", "")
+                detail_str = f" \u2014 {details}" if details else ""
+                lines.append(f"  {fid}: {pts:+d} pts ({name}){detail_str}")
+            lines.append("")
+
+        # Multipliers
+        lines.append("\U0001f4b0 MULTIPLIERS:")
+        lines.append(f"  Amount: x{alert.multiplier:.2f} (${self._fmt_amount(alert.total_amount)} total)")
+        # Extract sniper/shotgun info from scoring
+        if alert.score_raw and alert.score_raw > 0 and alert.score:
+            effective_mult = alert.score / alert.score_raw if alert.score_raw else 0
+            lines.append(f"  Effective: x{effective_mult:.2f} (raw={alert.score_raw} \u2192 final={alert.score})")
+        lines.append("")
+
+        # Top wallets
+        if alert.wallets:
+            lines.append("\U0001f517 Top wallets:")
+            sorted_wallets = sorted(
+                alert.wallets, key=lambda w: w.get("total_amount", 0), reverse=True
+            )
+            for w in sorted_wallets[:5]:
+                addr = w.get("address", "?")
+                short_addr = f"{addr[:6]}...{addr[-4:]}" if len(addr) > 10 else addr
+                amt = w.get("total_amount", 0)
+                txs = w.get("trade_count", 0)
+                lines.append(f"  {short_addr} \u2014 ${amt:,.0f} ({txs} txs)")
+            lines.append("")
+
+        # Market link
+        slug = ""
+        if alert.market_id:
+            slug = alert.market_id
+        lines.append(f"\U0001f517 https://polymarket.com/event/{slug}")
+        lines.append("\u2500" * 26)
 
         return "\n".join(lines)
 
@@ -232,6 +298,55 @@ class AlertFormatter:
             "",
             "\u26a0\ufe0f Conflicting signals \u2014 exercise caution.",
         ])
+
+        return "\n".join(lines)
+
+    # ── Sell notifications ──────────────────────────────────
+
+    def format_sell_notification(self, sell_event: dict) -> str:
+        """Format an individual sell notification for Telegram."""
+        wallet = sell_event["wallets"][0]
+        addr = wallet.get("address", "?")
+        short_addr = f"{addr[:6]}...{addr[-4:]}" if len(addr) > 10 else addr
+        question = sell_event.get("market_question") or sell_event.get("market_id", "?")
+
+        lines = [
+            "\U0001f534 SELL DETECTED \u2014 Sentinel Alpha",
+            "",
+            f'\U0001f4ca "{question}"',
+            f"\U0001f45b {short_addr}",
+            f"\U0001f4b0 Sold ${self._fmt_amount(wallet.get('sell_amount'))} "
+            f"(had ${self._fmt_amount(wallet.get('original_amount'))} {wallet.get('direction', '')})",
+            "",
+            "\u2139\ufe0f Position exit detected.",
+        ]
+
+        return "\n".join(lines)
+
+    def format_coordinated_sell(self, sell_event: dict) -> str:
+        """Format a coordinated sell notification for Telegram."""
+        wallets = sell_event.get("wallets", [])
+        question = sell_event.get("market_question") or sell_event.get("market_id", "?")
+        total_sold = sum(w.get("sell_amount", 0) for w in wallets)
+
+        lines = [
+            "\U0001f6a8 COORDINATED SELL \u2014 Sentinel Alpha",
+            "",
+            f'\U0001f4ca "{question}"',
+            f"\U0001f45b {len(wallets)} wallets selling within {config.SELL_COORDINATED_WINDOW_HOURS}h",
+            f"\U0001f4b0 Total sold: ${self._fmt_amount(total_sold)}",
+            "",
+        ]
+
+        for w in wallets[:5]:
+            addr = w.get("address", "?")
+            short_addr = f"{addr[:6]}...{addr[-4:]}" if len(addr) > 10 else addr
+            lines.append(
+                f"  {short_addr}: ${self._fmt_amount(w.get('sell_amount'))} "
+                f"of ${self._fmt_amount(w.get('original_amount'))}"
+            )
+
+        lines.extend(["", "\u26a0\ufe0f Coordinated exit — exercise caution."])
 
         return "\n".join(lines)
 
