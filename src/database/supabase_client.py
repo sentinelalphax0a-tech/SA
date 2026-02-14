@@ -124,6 +124,29 @@ class SupabaseClient:
         """Delete a wallet by address."""
         self.client.table("wallets").delete().eq("address", address).execute()
 
+    def update_wallet_stats(self, address: str, won: bool) -> None:
+        """Increment markets_won or markets_lost and recalculate win_rate."""
+        wallet = self.get_wallet(address)
+        if not wallet:
+            return
+
+        markets_won = wallet.get("markets_won", 0)
+        markets_lost = wallet.get("markets_lost", 0)
+
+        if won:
+            markets_won += 1
+        else:
+            markets_lost += 1
+
+        total = markets_won + markets_lost
+        win_rate = markets_won / total if total > 0 else 0.0
+
+        self.client.table("wallets").update({
+            "markets_won": markets_won,
+            "markets_lost": markets_lost,
+            "win_rate": round(win_rate, 4),
+        }).eq("address", address).execute()
+
     # ── Markets ────────────────────────────────────────────
 
     def get_market(self, market_id: str) -> dict | None:
@@ -147,6 +170,13 @@ class SupabaseClient:
     def insert_market(self, market: Market) -> None:
         data = _serialize(asdict(market))
         self.client.table("markets").insert(data).execute()
+
+    def update_market_resolution(self, market_id: str, outcome: str) -> None:
+        """Mark a market as resolved with the given outcome (YES/NO)."""
+        self.client.table("markets").update({
+            "is_resolved": True,
+            "outcome": outcome,
+        }).eq("market_id", market_id).execute()
 
     def delete_market(self, market_id: str) -> None:
         self.client.table("markets").delete().eq("market_id", market_id).execute()
@@ -215,12 +245,42 @@ class SupabaseClient:
             update = {"published_telegram": True, "telegram_msg_id": msg_id}
         self.client.table("alerts").update(update).eq("id", alert_id).execute()
 
+    def update_alert_fields(self, alert_id: int, fields: dict) -> None:
+        """Update specific fields on an existing alert row."""
+        if not fields:
+            return
+        self.client.table("alerts").update(fields).eq("id", alert_id).execute()
+
     def get_alerts_pending(self) -> list[dict]:
         """Get all alerts with outcome='pending'."""
         resp = (
             self.client.table("alerts")
             .select("*")
             .eq("outcome", "pending")
+            .execute()
+        )
+        return resp.data or []
+
+    def get_recent_alerts_for_market(
+        self, market_id: str, direction: str, hours: int = 24
+    ) -> list[dict]:
+        """Fetch recent alerts for a market+direction within the last N hours.
+
+        Used for cross-scan deduplication. Returns raw dicts including
+        the JSONB `wallets` field for client-side primary wallet matching.
+        """
+        from datetime import datetime, timedelta, timezone
+
+        cutoff = (
+            datetime.now(timezone.utc) - timedelta(hours=hours)
+        ).isoformat()
+        resp = (
+            self.client.table("alerts")
+            .select("id,market_id,direction,wallets,odds_at_alert,total_amount,score")
+            .eq("market_id", market_id)
+            .eq("direction", direction)
+            .gte("created_at", cutoff)
+            .order("created_at", desc=True)
             .execute()
         )
         return resp.data or []
@@ -447,6 +507,185 @@ class SupabaseClient:
             .execute()
         )
         return resp.data or []
+
+    # ── Notification Log ──────────────────────────────────
+
+    def get_recently_resolved(self, hours: int = 6) -> list[dict]:
+        """Get alerts resolved within the last N hours."""
+        from datetime import timedelta, timezone
+
+        cutoff = (
+            datetime.now(timezone.utc) - timedelta(hours=hours)
+        ).isoformat()
+        resp = (
+            self.client.table("alerts")
+            .select("*")
+            .neq("outcome", "pending")
+            .gte("resolved_at", cutoff)
+            .order("resolved_at", desc=True)
+            .execute()
+        )
+        return resp.data or []
+
+    def get_notification_log(self, alert_id: int) -> dict | None:
+        """Get the notification log entry for an alert."""
+        try:
+            resp = (
+                self.client.table("notification_log")
+                .select("*")
+                .eq("alert_id", alert_id)
+                .order("last_notified_at", desc=True)
+                .limit(1)
+                .execute()
+            )
+            return resp.data[0] if resp.data else None
+        except Exception:
+            return None
+
+    def log_notification(self, alert_id: int, notification_type: str) -> None:
+        """Record that a notification was sent for an alert."""
+        from datetime import timezone
+
+        now = datetime.now(timezone.utc).isoformat()
+        self.client.table("notification_log").upsert({
+            "alert_id": alert_id,
+            "notification_type": notification_type,
+            "last_notified_at": now,
+        }).execute()
+
+    # ── Alert Consolidation ─────────────────────────────────
+
+    def get_existing_high_star_alert(
+        self,
+        market_id: str,
+        direction: str,
+        min_stars: int = 4,
+        hours: int = 48,
+    ) -> dict | None:
+        """Find an existing pending high-star alert for consolidation."""
+        from datetime import timedelta, timezone
+
+        cutoff = (
+            datetime.now(timezone.utc) - timedelta(hours=hours)
+        ).isoformat()
+        resp = (
+            self.client.table("alerts")
+            .select("*")
+            .eq("market_id", market_id)
+            .eq("direction", direction)
+            .eq("outcome", "pending")
+            .gte("star_level", min_stars)
+            .gte("created_at", cutoff)
+            .order("created_at", desc=True)
+            .limit(1)
+            .execute()
+        )
+        return resp.data[0] if resp.data else None
+
+    def update_alert_consolidation(
+        self,
+        alert_id: int,
+        new_wallets: list[dict],
+        new_amount: float,
+        new_score: int | None = None,
+    ) -> None:
+        """Merge new wallets into an existing alert (high-star consolidation)."""
+        from datetime import timezone
+
+        alert = self.get_alert(alert_id)
+        if not alert:
+            return
+
+        existing_wallets = alert.get("wallets") or []
+        merged_wallets = existing_wallets + new_wallets
+
+        fields = {
+            "wallets": merged_wallets,
+            "total_amount": (alert.get("total_amount") or 0) + new_amount,
+            "confluence_count": len(merged_wallets),
+            "updated_count": (alert.get("updated_count") or 0) + 1,
+            "last_updated_at": datetime.now(timezone.utc).isoformat(),
+        }
+        if new_score is not None:
+            fields["score"] = new_score
+
+        self.client.table("alerts").update(fields).eq("id", alert_id).execute()
+
+    # ── Whale Monitor ─────────────────────────────────────
+
+    def get_high_star_alerts(self, min_stars: int = 4) -> list[dict]:
+        """Get pending alerts with star_level >= min_stars."""
+        resp = (
+            self.client.table("alerts")
+            .select("*")
+            .eq("outcome", "pending")
+            .gte("star_level", min_stars)
+            .execute()
+        )
+        return resp.data or []
+
+    def get_whale_notifications(self, alert_id: int) -> list[dict]:
+        """Get whale notification log entries for an alert."""
+        try:
+            resp = (
+                self.client.table("whale_notifications")
+                .select("*")
+                .eq("alert_id", alert_id)
+                .execute()
+            )
+            return resp.data or []
+        except Exception:
+            return []
+
+    def log_whale_notification(
+        self,
+        alert_id: int,
+        event_type: str,
+        wallet_address: str,
+        details: dict,
+    ) -> None:
+        """Record that a whale notification was sent."""
+        from datetime import timezone
+
+        now = datetime.now(timezone.utc).isoformat()
+        self.client.table("whale_notifications").insert({
+            "alert_id": alert_id,
+            "event_type": event_type,
+            "wallet_address": wallet_address,
+            "details": details,
+            "created_at": now,
+        }).execute()
+
+    def get_recent_alerts_with_wallet(
+        self, wallet_address: str, hours: int = 6
+    ) -> list[dict]:
+        """Get recent alerts that contain a specific wallet address.
+
+        Searches the JSONB wallets column for matching addresses.
+        """
+        from datetime import timedelta, timezone
+
+        cutoff = (
+            datetime.now(timezone.utc) - timedelta(hours=hours)
+        ).isoformat()
+        resp = (
+            self.client.table("alerts")
+            .select("*")
+            .gte("created_at", cutoff)
+            .order("created_at", desc=True)
+            .execute()
+        )
+        rows = resp.data or []
+        # Client-side filter: Supabase JSONB containment queries are limited,
+        # so we filter the wallets array in Python.
+        result = []
+        for row in rows:
+            wallets = row.get("wallets") or []
+            for w in wallets:
+                if w.get("address") == wallet_address:
+                    result.append(row)
+                    break
+        return result
 
     # ── Utility ────────────────────────────────────────────
 

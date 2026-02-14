@@ -104,6 +104,9 @@ class SellDetector:
                 "original_amount": pos.get("total_amount", 0),
                 "direction": direction,
                 "timestamp": sell_ts,
+                "entry_odds": pos.get("entry_odds"),
+                "alert_id": pos.get("alert_id"),
+                "entry_date": pos.get("created_at"),
             })
 
             # Update position in DB
@@ -120,12 +123,14 @@ class SellDetector:
         if not sell_wallets:
             return []
 
-        # Get market question for notification
+        # Get market question and current odds for notification
         market_question = None
+        current_odds = None
         try:
             market_data = self.db.get_market(market_id)
             if market_data:
                 market_question = market_data.get("question")
+                current_odds = market_data.get("current_odds")
         except Exception:
             pass
 
@@ -140,6 +145,7 @@ class SellDetector:
                     "type": "coordinated",
                     "market_id": market_id,
                     "market_question": market_question,
+                    "current_odds": current_odds,
                     "wallets": sell_wallets,
                     "timestamp": max(timestamps),
                 })
@@ -151,6 +157,7 @@ class SellDetector:
                 "type": "individual",
                 "market_id": market_id,
                 "market_question": market_question,
+                "current_odds": current_odds,
                 "wallets": [sw],
                 "timestamp": sw["timestamp"],
             })

@@ -1,12 +1,12 @@
-name: Sentinel Alpha Scan
+name: Alert Tracker
 
 on:
   schedule:
-    - cron: "0 */3 * * *"  # Every 3 hours
-  workflow_dispatch:  # Manual trigger
+    - cron: "0 1,7,13,19 * * *"  # 4 times/day (every 6h)
+  workflow_dispatch:
 
 jobs:
-  scan:
+  tracker:
     runs-on: ubuntu-latest
     timeout-minutes: 10
 
@@ -16,12 +16,12 @@ jobs:
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
-          python-version: "3.11"
+          python-version: "3.13"
 
       - name: Install dependencies
         run: pip install -r requirements.txt
 
-      - name: Run scan
+      - name: Run tracker + notifier + whale monitor
         env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
@@ -33,4 +33,4 @@ jobs:
           TWITTER_ACCESS_SECRET: ${{ secrets.TWITTER_ACCESS_SECRET }}
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHANNEL_ID: ${{ secrets.TELEGRAM_CHANNEL_ID }}
-        run: python -m src.main
+        run: python -m src.tracking.run_tracker

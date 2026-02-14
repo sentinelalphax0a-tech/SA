@@ -44,6 +44,7 @@ from src.analysis.scoring import calculate_score
 from src.analysis.arbitrage_filter import tokenize_for_dedup, jaccard
 from src.publishing.twitter_bot import TwitterBot
 from src.publishing.telegram_bot import TelegramBot
+from src.publishing.formatter import AlertFormatter
 
 logging.basicConfig(
     level=logging.INFO,
@@ -216,6 +217,109 @@ def _deduplicate_alerts(
     return alerts
 
 
+def _get_primary_wallet(alert: Alert) -> str | None:
+    """Return the address of the wallet with the highest total_amount."""
+    if not alert.wallets:
+        return None
+    best = max(alert.wallets, key=lambda w: w.get("total_amount", 0))
+    return best.get("address")
+
+
+def _check_cross_scan_duplicate(
+    alert: Alert, db: SupabaseClient
+) -> int | None:
+    """Check if a cross-scan duplicate exists in the DB.
+
+    Looks for an alert with the same market_id, direction, and primary
+    wallet address created within the last CROSS_SCAN_DEDUP_HOURS hours.
+
+    Returns the existing alert's `id` if a duplicate is found, None otherwise.
+    """
+    primary_wallet = _get_primary_wallet(alert)
+    if not primary_wallet:
+        return None
+
+    recent = db.get_recent_alerts_for_market(
+        market_id=alert.market_id,
+        direction=alert.direction or "YES",
+        hours=config.CROSS_SCAN_DEDUP_HOURS,
+    )
+
+    for existing in recent:
+        existing_wallets = existing.get("wallets") or []
+        if not existing_wallets:
+            continue
+        existing_primary = max(
+            existing_wallets,
+            key=lambda w: w.get("total_amount", 0),
+        )
+        if existing_primary.get("address") == primary_wallet:
+            return existing.get("id")
+
+    return None
+
+
+def _find_new_wallets(
+    incoming_wallets: list[dict],
+    existing_wallets: list[dict],
+) -> list[dict]:
+    """Find wallets in incoming that don't exist in existing (by address)."""
+    existing_addresses = {w.get("address") for w in existing_wallets}
+    return [
+        w for w in incoming_wallets
+        if w.get("address") not in existing_addresses
+    ]
+
+
+def _try_consolidate(
+    alert: Alert,
+    db: SupabaseClient,
+    telegram: TelegramBot,
+) -> bool:
+    """Try to consolidate alert into an existing high-star alert.
+
+    Returns True if consolidated (caller should skip insert), False otherwise.
+    """
+    existing = db.get_existing_high_star_alert(
+        market_id=alert.market_id,
+        direction=alert.direction or "YES",
+    )
+    if existing is None:
+        return False
+
+    new_wallets = _find_new_wallets(
+        alert.wallets or [], existing.get("wallets") or []
+    )
+    if not new_wallets:
+        return True  # Same wallets, skip without update message
+
+    new_amount = sum(w.get("total_amount", 0) for w in new_wallets)
+    new_score = (
+        alert.score
+        if alert.score > (existing.get("score") or 0)
+        else None
+    )
+
+    db.update_alert_consolidation(
+        alert_id=existing["id"],
+        new_wallets=new_wallets,
+        new_amount=new_amount,
+        new_score=new_score,
+    )
+
+    update_count = (existing.get("updated_count") or 0) + 1
+    formatter = AlertFormatter()
+    msg = formatter.format_alert_update(
+        original_alert=existing,
+        new_wallets=new_wallets,
+        new_amount=new_amount,
+        update_count=update_count,
+    )
+    telegram.send_message(msg, parse_mode="")
+
+    return True
+
+
 # ── Main scan ────────────────────────────────────────────────
 
 
@@ -308,6 +412,8 @@ def run_scan() -> None:
             "alerts_published_x": 0,
             "alerts_published_tg": 0,
             "alerts_deduplicated": 0,
+            "alerts_cross_scan_dedup": 0,
+            "alerts_consolidated": 0,
         }
         collected_alerts: list[tuple[Alert, bool]] = []
 
@@ -377,22 +483,61 @@ def run_scan() -> None:
         # ── Step 8: Save + Publish ─────────────────────────────
         for alert, is_whale in collected_alerts:
             try:
+                # 8a. Within-scan dedup: still insert, but skip publish
+                if alert.deduplicated:
+                    alert_id = db.insert_alert(alert)
+                    alert.id = alert_id
+                    counters["alerts_generated"] += 1
+                    logger.debug(
+                        "Skipping publish for within-scan deduplicated alert #%s",
+                        alert_id,
+                    )
+                    continue
+
+                # 8b. Cross-scan dedup: check for existing alert in last 24h
+                existing_id = _check_cross_scan_duplicate(alert, db)
+                if existing_id is not None:
+                    db.update_alert_fields(existing_id, {
+                        "odds_at_alert": alert.odds_at_alert,
+                        "total_amount": alert.total_amount,
+                        "score": alert.score,
+                        "wallets": alert.wallets,
+                    })
+                    alert.deduplicated = True
+                    counters["alerts_cross_scan_dedup"] += 1
+                    logger.info(
+                        "Cross-scan dedup: updated existing alert #%d for %s %s (%s)",
+                        existing_id,
+                        alert.direction,
+                        alert.market_id[:12],
+                        alert.market_question[:40] if alert.market_question else "",
+                    )
+                    continue
+
+                # 8b2. High-star consolidation: merge into existing 4+★ alert
+                if _try_consolidate(alert, db, telegram):
+                    counters["alerts_consolidated"] += 1
+                    logger.info(
+                        "Consolidated alert for %s %s into existing high-star alert",
+                        alert.direction,
+                        alert.market_id[:12],
+                    )
+                    continue
+
+                # 8c. New alert: insert + publish
                 alert_id = db.insert_alert(alert)
                 alert.id = alert_id
                 counters["alerts_generated"] += 1
 
-                if not alert.deduplicated:
-                    _publish_alert(
-                        alert=alert,
-                        alert_id=alert_id,
-                        is_whale=is_whale,
-                        db=db,
-                        twitter=twitter,
-                        telegram=telegram,
-                        counters=counters,
-                    )
-                else:
-                    logger.debug("Skipping publish for deduplicated alert #%s", alert_id)
+                _publish_alert(
+                    alert=alert,
+                    alert_id=alert_id,
+                    is_whale=is_whale,
+                    db=db,
+                    twitter=twitter,
+                    telegram=telegram,
+                    counters=counters,
+                )
             except Exception as e:
                 logger.error("Failed to save/publish alert: %s", e)
 
@@ -780,13 +925,35 @@ def _analyze_wallet(
     span_hours = (accum.last_trade - accum.first_trade).total_seconds() / 3600
     # Distinct markets this wallet traded in (for sniper/shotgun scoring)
     distinct_markets = len({t.market_id for t in all_trades if t.wallet_address == wallet_address})
+
+    # Individual trade details for detailed Telegram format
+    trade_details = []
+    total_weighted_price = 0.0
+    for t in accum.trades:
+        trade_details.append({
+            "amount": t.amount,
+            "price": t.price,
+            "timestamp": t.timestamp.isoformat(),
+        })
+        total_weighted_price += t.price * t.amount
+
+    avg_entry = (
+        total_weighted_price / accum.total_amount
+        if accum.total_amount > 0
+        else 0.0
+    )
+
     wallet_info = {
         "address": wallet_address,
         "direction": direction,
         "total_amount": accum.total_amount,
         "trade_count": accum.trade_count,
-        "time_span_hours": round(span_hours, 1),
+        "time_span_hours": round(span_hours, 2),
         "distinct_markets": distinct_markets,
+        "trades": trade_details,
+        "avg_entry_price": round(avg_entry, 4),
+        "first_trade_time": accum.first_trade.isoformat(),
+        "last_trade_time": accum.last_trade.isoformat(),
     }
 
     return wallet_info, filters
@@ -834,29 +1001,26 @@ def _publish_alert(
             except Exception as e:
                 logger.debug("upsert_wallet_position failed: %s", e)
 
-    # ── Publish to private Telegram (testing: detailed format) ──
-    # Testing phase: ALL alerts go to Telegram with detailed format.
-    # Whale entries use publish_whale_entry (also detailed now).
-    # For public launch: restore star >= 2 gate and whale-only routing.
-    if is_whale:
-        try:
-            msg_id = telegram.publish_whale_entry(alert)
-            if msg_id and alert_id:
-                db.update_alert_published(alert_id, "telegram", msg_id)
-                counters["alerts_published_tg"] += 1
-        except Exception as e:
-            logger.error("Telegram whale publish failed: %s", e)
-    elif star >= 1:
-        try:
-            msg_id = telegram.publish_alert(alert)
-            if msg_id and alert_id:
-                db.update_alert_published(alert_id, "telegram", msg_id)
-                counters["alerts_published_tg"] += 1
-        except Exception as e:
-            logger.error("Telegram publish failed: %s", e)
+    # ── Publish to Telegram (4+ stars only) ──────────────────
+    if star >= 4:
+        if is_whale:
+            try:
+                msg_id = telegram.publish_whale_entry(alert)
+                if msg_id and alert_id:
+                    db.update_alert_published(alert_id, "telegram", msg_id)
+                    counters["alerts_published_tg"] += 1
+            except Exception as e:
+                logger.error("Telegram whale publish failed: %s", e)
+        else:
+            try:
+                msg_id = telegram.publish_alert(alert)
+                if msg_id and alert_id:
+                    db.update_alert_published(alert_id, "telegram", msg_id)
+                    counters["alerts_published_tg"] += 1
+            except Exception as e:
+                logger.error("Telegram publish failed: %s", e)
 
-    # ── Publish to public Telegram (short format, 3+ stars) ──
-    if star >= 3:
+        # Public Telegram channel
         try:
             telegram.publish_to_public(alert)
         except Exception as e:

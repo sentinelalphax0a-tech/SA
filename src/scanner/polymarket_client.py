@@ -202,6 +202,57 @@ class PolymarketClient:
             opposite_market=raw.get("negRiskMarketID"),
         )
 
+    # ── Market Resolution (Gamma API) ─────────────────────
+
+    def get_market_resolution(self, market_id: str) -> dict | None:
+        """Check if a market is resolved and determine the outcome.
+
+        Returns:
+            {"resolved": True, "outcome": "YES"|"NO"} if resolved,
+            {"resolved": False} if still active,
+            None on API failure.
+        """
+        try:
+            resp = self.session.get(
+                f"{self.gamma_base}/markets",
+                params={"conditionId": market_id, "limit": 1},
+                timeout=10,
+            )
+            resp.raise_for_status()
+            data = resp.json()
+            if not data:
+                return None
+
+            raw = data[0]
+            is_closed = bool(raw.get("closed", False))
+
+            if not is_closed:
+                return {"resolved": False}
+
+            # Determine outcome from outcomePrices
+            outcome_prices = raw.get("outcomePrices", "[]")
+            if isinstance(outcome_prices, str):
+                try:
+                    outcome_prices = json.loads(outcome_prices)
+                except (json.JSONDecodeError, TypeError):
+                    outcome_prices = []
+
+            outcome = None
+            if len(outcome_prices) >= 2:
+                try:
+                    yes_price = float(outcome_prices[0])
+                    if yes_price > 0.9:
+                        outcome = "YES"
+                    elif yes_price < 0.1:
+                        outcome = "NO"
+                except (ValueError, TypeError):
+                    pass
+
+            return {"resolved": True, "outcome": outcome}
+        except Exception as e:
+            logger.error("get_market_resolution failed for %s: %s", market_id, e)
+            return None
+
     # ── Trades (Data API) ──────────────────────────────────
 
     def get_recent_trades(

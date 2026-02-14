@@ -218,8 +218,9 @@ class TestPublishAlert:
             total_amount=5000,
         )
 
-    def test_3_star_publishes_both(self):
-        alert = self._make_alert(star=3)
+    def test_4_star_publishes_telegram_and_x(self):
+        """4+ stars publish to Telegram and X."""
+        alert = self._make_alert(star=4)
         db = MagicMock()
         twitter = MagicMock()
         twitter.publish_alert.return_value = "tw123"
@@ -237,13 +238,13 @@ class TestPublishAlert:
         assert counters["alerts_published_tg"] == 1
         assert counters["alerts_published_x"] == 1
 
-    def test_2_star_only_telegram(self):
-        alert = self._make_alert(star=2)
+    def test_3_star_no_telegram_only_x(self):
+        """3-star alerts go to X but NOT Telegram."""
+        alert = self._make_alert(star=3)
         db = MagicMock()
         twitter = MagicMock()
-        twitter.publish_alert.return_value = None
+        twitter.publish_alert.return_value = "tw1"
         telegram = MagicMock()
-        telegram.publish_alert.return_value = "tg1"
         counters = {"alerts_published_x": 0, "alerts_published_tg": 0}
 
         _publish_alert(
@@ -251,12 +252,14 @@ class TestPublishAlert:
             db=db, twitter=twitter, telegram=telegram,
             counters=counters,
         )
-        telegram.publish_alert.assert_called_once()
-        # twitter.publish_alert not called since star < 3
-        assert counters["alerts_published_tg"] == 1
+        telegram.publish_alert.assert_not_called()
+        twitter.publish_alert.assert_called_once()
+        assert counters["alerts_published_tg"] == 0
+        assert counters["alerts_published_x"] == 1
 
-    def test_whale_always_telegram(self):
-        alert = self._make_alert(star=0, is_whale=True)
+    def test_whale_4star_publishes_telegram(self):
+        """Whale entry with 4+ stars publishes to Telegram."""
+        alert = self._make_alert(star=4, is_whale=True)
         db = MagicMock()
         twitter = MagicMock()
         telegram = MagicMock()
@@ -271,23 +274,22 @@ class TestPublishAlert:
         telegram.publish_whale_entry.assert_called_once()
         assert counters["alerts_published_tg"] == 1
 
-    def test_1_star_publishes_telegram_during_testing(self):
-        """Testing phase: 1-star alerts go to Telegram, not X."""
-        alert = self._make_alert(star=1)
-        db = MagicMock()
-        twitter = MagicMock()
-        telegram = MagicMock()
-        telegram.publish_alert.return_value = "tg1"
-        counters = {"alerts_published_x": 0, "alerts_published_tg": 0}
+    def test_low_star_no_telegram(self):
+        """1-3 star alerts are NOT published to Telegram."""
+        for star in (1, 2, 3):
+            alert = self._make_alert(star=star)
+            db = MagicMock()
+            twitter = MagicMock()
+            telegram = MagicMock()
+            counters = {"alerts_published_x": 0, "alerts_published_tg": 0}
 
-        _publish_alert(
-            alert=alert, alert_id=1, is_whale=False,
-            db=db, twitter=twitter, telegram=telegram,
-            counters=counters,
-        )
-        telegram.publish_alert.assert_called_once()
-        twitter.publish_alert.assert_not_called()
-        assert counters["alerts_published_tg"] == 1
+            _publish_alert(
+                alert=alert, alert_id=1, is_whale=False,
+                db=db, twitter=twitter, telegram=telegram,
+                counters=counters,
+            )
+            telegram.publish_alert.assert_not_called()
+            assert counters["alerts_published_tg"] == 0
 
 
 # ── run_scan ─────────────────────────────────────────────────
@@ -549,6 +551,33 @@ class TestFilterMarkets:
         result = _filter_markets(markets)
         assert len(result) == 1
         assert result[0].market_id == "m2"
+
+    def test_blacklists_btc_price_market(self):
+        markets = [
+            Market(market_id="m1", question="Will Bitcoin reach $100k by June?", volume_24h=5000, current_odds=0.10),
+            Market(market_id="m2", question="Will Ethereum dip below $2000?", volume_24h=5000, current_odds=0.10),
+            Market(market_id="m3", question="What is the price of Bitcoin on Dec 31?", volume_24h=5000, current_odds=0.10),
+            Market(market_id="m4", question="Will BTC reach $150k?", volume_24h=5000, current_odds=0.10),
+        ]
+        result = _filter_markets(markets)
+        assert len(result) == 0
+
+    def test_does_not_blacklist_btc_etf_market(self):
+        markets = [
+            Market(market_id="m1", question="Will Bitcoin ETF be approved by SEC?", volume_24h=5000, current_odds=0.10),
+            Market(market_id="m2", question="Will Congress regulate Ethereum staking?", volume_24h=5000, current_odds=0.10),
+        ]
+        result = _filter_markets(markets)
+        assert len(result) == 2
+
+    def test_blacklist_case_insensitive(self):
+        markets = [
+            Market(market_id="m1", question="WILL BITCOIN REACH $200k?", volume_24h=5000, current_odds=0.10),
+            Market(market_id="m2", question="will bitcoin reach $50k?", volume_24h=5000, current_odds=0.10),
+            Market(market_id="m3", question="Will Bitcoin Reach $75k?", volume_24h=5000, current_odds=0.10),
+        ]
+        result = _filter_markets(markets)
+        assert len(result) == 0
 
     def test_sorted_by_volume(self):
         markets = [

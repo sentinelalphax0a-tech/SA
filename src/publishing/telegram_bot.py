@@ -1,12 +1,13 @@
 """
 Telegram Bot — Publishes alerts to @SentinelAlphaChannel.
 
-Handles bot auth and message sending. No rate limit on Telegram.
+Handles bot auth and message sending with rate limiting.
 Publishes alerts with star_level >= 2 (score >= 50) and all whale entries (B19).
 """
 
 import logging
 import os
+import time
 
 import requests
 
@@ -15,6 +16,8 @@ from src.database.models import Alert
 from src.publishing.formatter import AlertFormatter
 
 logger = logging.getLogger(__name__)
+
+_SEND_DELAY = 1.5  # seconds between consecutive sends
 
 
 class TelegramBot:
@@ -25,6 +28,13 @@ class TelegramBot:
         self.channel_id = config.TELEGRAM_CHANNEL_ID
         self.base_url = f"https://api.telegram.org/bot{self.token}"
         self.formatter = AlertFormatter()
+        self._last_send_time: float = 0.0
+
+    def _rate_limit_delay(self) -> None:
+        """Wait if needed to enforce minimum delay between sends."""
+        elapsed = time.monotonic() - self._last_send_time
+        if self._last_send_time > 0 and elapsed < _SEND_DELAY:
+            time.sleep(_SEND_DELAY - elapsed)
 
     def send_message(
         self, text: str, parse_mode: str = "HTML"
@@ -32,20 +42,34 @@ class TelegramBot:
         """Send a text message to the Telegram channel.
 
         Returns the message_id as string, or None on failure.
+        Enforces 1.5s delay between sends and retries once on 429.
         """
         if not self.token or not self.channel_id:
             logger.warning("Telegram credentials not configured, skipping")
             return None
+
+        self._rate_limit_delay()
+
+        # Visual separator between consecutive messages
+        text = "\n" + text
+
+        payload = {
+            "chat_id": self.channel_id,
+            "text": text,
+            "parse_mode": parse_mode,
+        }
+        url = f"{self.base_url}/sendMessage"
+
         try:
-            resp = requests.post(
-                f"{self.base_url}/sendMessage",
-                json={
-                    "chat_id": self.channel_id,
-                    "text": text,
-                    "parse_mode": parse_mode,
-                },
-                timeout=10,
-            )
+            resp = requests.post(url, json=payload, timeout=10)
+
+            # 429 retry: wait 5s, try once more
+            if resp.status_code == 429:
+                logger.warning("Telegram rate-limited (429), retrying in 5s")
+                time.sleep(5)
+                resp = requests.post(url, json=payload, timeout=10)
+
+            self._last_send_time = time.monotonic()
             resp.raise_for_status()
             data = resp.json()
             if not data.get("ok"):
@@ -71,6 +95,9 @@ class TelegramBot:
         if not self.token or not self.channel_id:
             logger.warning("Telegram credentials not configured, skipping")
             return None
+
+        self._rate_limit_delay()
+
         try:
             with open(photo_path, "rb") as img:
                 resp = requests.post(
@@ -83,6 +110,7 @@ class TelegramBot:
                     files={"photo": img},
                     timeout=30,
                 )
+            self._last_send_time = time.monotonic()
             resp.raise_for_status()
             data = resp.json()
             if not data.get("ok"):
@@ -175,16 +203,27 @@ class TelegramBot:
         """
         if not self.token or not channel_id:
             return None
+
+        self._rate_limit_delay()
+
+        text = "\n" + text
+
+        payload = {
+            "chat_id": channel_id,
+            "text": text,
+            "parse_mode": parse_mode,
+        }
+        url = f"{self.base_url}/sendMessage"
+
         try:
-            resp = requests.post(
-                f"{self.base_url}/sendMessage",
-                json={
-                    "chat_id": channel_id,
-                    "text": text,
-                    "parse_mode": parse_mode,
-                },
-                timeout=10,
-            )
+            resp = requests.post(url, json=payload, timeout=10)
+
+            if resp.status_code == 429:
+                logger.warning("Telegram rate-limited (429), retrying in 5s")
+                time.sleep(5)
+                resp = requests.post(url, json=payload, timeout=10)
+
+            self._last_send_time = time.monotonic()
             resp.raise_for_status()
             data = resp.json()
             if not data.get("ok"):

@@ -107,7 +107,10 @@ class AlertFormatter:
         Shows all triggered filters with points, multipliers, and top wallets.
         """
         stars = self._star_emoji(alert.star_level or 0)
-        odds_str = f"{alert.odds_at_alert:.2f}" if alert.odds_at_alert is not None else "N/A"
+        odds_str = (
+            f"{self._direction_odds(alert.odds_at_alert, alert.direction):.2f}"
+            if alert.odds_at_alert is not None else "N/A"
+        )
         alert_num = alert.id or "?"
 
         lines = [
@@ -141,18 +144,24 @@ class AlertFormatter:
             lines.append(f"  Effective: x{effective_mult:.2f} (raw={alert.score_raw} \u2192 final={alert.score})")
         lines.append("")
 
-        # Top wallets
+        # Price impact (alert-level)
+        if alert.odds_at_alert is not None and alert.price_impact is not None:
+            old = self._direction_odds(alert.odds_at_alert, alert.direction)
+            new = self._direction_odds(
+                alert.odds_at_alert + alert.price_impact, alert.direction
+            )
+            pct = ((new - old) / old * 100) if old > 0 else 0
+            lines.append(f"\U0001f4c8 Price Impact: {old:.2f} \u2192 {new:.2f} ({pct:+.1f}%)")
+            lines.append("")
+
+        # Top wallets (detailed)
         if alert.wallets:
-            lines.append("\U0001f517 Top wallets:")
             sorted_wallets = sorted(
                 alert.wallets, key=lambda w: w.get("total_amount", 0), reverse=True
             )
-            for w in sorted_wallets[:5]:
-                addr = w.get("address", "?")
-                short_addr = f"{addr[:6]}...{addr[-4:]}" if len(addr) > 10 else addr
-                amt = w.get("total_amount", 0)
-                txs = w.get("trade_count", 0)
-                lines.append(f"  {short_addr} \u2014 ${amt:,.0f} ({txs} txs)")
+            lines.append("\U0001f517 TOP WALLETS:")
+            for w in sorted_wallets[:3]:
+                lines.extend(self._format_wallet_detail(w, alert))
             lines.append("")
 
         # Market link
@@ -176,9 +185,11 @@ class AlertFormatter:
         ]
 
         if alert.odds_at_alert is not None and alert.price_impact is not None:
-            old = alert.odds_at_alert
-            new = old + alert.price_impact
-            pct = alert.price_impact * 100
+            old = self._direction_odds(alert.odds_at_alert, alert.direction)
+            new = self._direction_odds(
+                alert.odds_at_alert + alert.price_impact, alert.direction
+            )
+            pct = (new - old) * 100
             lines.append(
                 f"\U0001f4c8 Impact: {pct:+.1f}% ({old:.2f} \u2192 {new:.2f})"
             )
@@ -304,22 +315,74 @@ class AlertFormatter:
     # ── Sell notifications ──────────────────────────────────
 
     def format_sell_notification(self, sell_event: dict) -> str:
-        """Format an individual sell notification for Telegram."""
+        """Format an individual sell notification for Telegram with P&L."""
         wallet = sell_event["wallets"][0]
         addr = wallet.get("address", "?")
         short_addr = f"{addr[:6]}...{addr[-4:]}" if len(addr) > 10 else addr
         question = sell_event.get("market_question") or sell_event.get("market_id", "?")
+        market_id = sell_event.get("market_id", "")
+        direction = wallet.get("direction", "YES")
 
         lines = [
             "\U0001f534 SELL DETECTED \u2014 Sentinel Alpha",
+            "\u2500" * 26,
             "",
             f'\U0001f4ca "{question}"',
-            f"\U0001f45b {short_addr}",
-            f"\U0001f4b0 Sold ${self._fmt_amount(wallet.get('sell_amount'))} "
-            f"(had ${self._fmt_amount(wallet.get('original_amount'))} {wallet.get('direction', '')})",
-            "",
-            "\u2139\ufe0f Position exit detected.",
+            f"\U0001f4c8 Direction: {direction}",
         ]
+
+        # Entry details
+        entry_odds = wallet.get("entry_odds")
+        original_amount = wallet.get("original_amount", 0)
+        if entry_odds is not None:
+            adj_entry = self._direction_odds(entry_odds, direction)
+            lines.append(
+                f"\U0001f4b0 Entry: ${self._fmt_amount(original_amount)} "
+                f"@ {adj_entry:.2f} odds"
+            )
+        else:
+            lines.append(f"\U0001f4b0 Entry: ${self._fmt_amount(original_amount)}")
+
+        lines.append(f"\U0001f4b8 Sold: ${self._fmt_amount(wallet.get('sell_amount'))}")
+
+        # Held duration
+        held_str = self._held_duration(wallet.get("entry_date"))
+        if held_str:
+            lines.append(f"\U0001f4c5 Held: {held_str}")
+
+        # P&L estimate
+        pnl = self._calc_pnl(
+            original_amount, entry_odds,
+            sell_event.get("current_odds"), direction,
+        )
+        if pnl:
+            lines.append("")
+            lines.append("\U0001f4ca P&L Estimate:")
+            lines.append(
+                f"  Shares: {pnl['shares']:,.0f} "
+                f"(${self._fmt_amount(original_amount)} / {pnl['entry_odds_adj']:.2f})"
+            )
+            lines.append(
+                f"  Value: ${pnl['current_value']:,.0f} "
+                f"(shares \u00d7 {pnl['current_odds_adj']:.2f})"
+            )
+            if pnl["pnl"] >= 0:
+                lines.append(
+                    f"  P&L: +${pnl['pnl']:,.0f} (+{pnl['pnl_pct']:.1f}%)"
+                )
+            else:
+                lines.append(
+                    f"  P&L: -${abs(pnl['pnl']):,.0f} ({pnl['pnl_pct']:.1f}%)"
+                )
+
+        lines.extend([
+            "",
+            f"\U0001f45b {short_addr}",
+            f"   https://polygonscan.com/address/{addr}",
+            "",
+            f"\U0001f517 https://polymarket.com/event/{market_id}",
+            "\u2500" * 26,
+        ])
 
         return "\n".join(lines)
 
@@ -327,26 +390,94 @@ class AlertFormatter:
         """Format a coordinated sell notification for Telegram."""
         wallets = sell_event.get("wallets", [])
         question = sell_event.get("market_question") or sell_event.get("market_id", "?")
+        market_id = sell_event.get("market_id", "")
         total_sold = sum(w.get("sell_amount", 0) for w in wallets)
+        direction = wallets[0].get("direction", "YES") if wallets else "YES"
 
         lines = [
             "\U0001f6a8 COORDINATED SELL \u2014 Sentinel Alpha",
+            "\u2500" * 26,
             "",
             f'\U0001f4ca "{question}"',
+            f"\U0001f4c8 Direction: {direction}",
             f"\U0001f45b {len(wallets)} wallets selling within {config.SELL_COORDINATED_WINDOW_HOURS}h",
-            f"\U0001f4b0 Total sold: ${self._fmt_amount(total_sold)}",
+            f"\U0001f4b8 Total sold: ${self._fmt_amount(total_sold)}",
             "",
         ]
 
         for w in wallets[:5]:
             addr = w.get("address", "?")
             short_addr = f"{addr[:6]}...{addr[-4:]}" if len(addr) > 10 else addr
+            entry_odds = w.get("entry_odds")
+            entry_str = ""
+            if entry_odds is not None:
+                adj_entry = self._direction_odds(entry_odds, w.get("direction"))
+                entry_str = f" @ {adj_entry:.2f}"
             lines.append(
-                f"  {short_addr}: ${self._fmt_amount(w.get('sell_amount'))} "
-                f"of ${self._fmt_amount(w.get('original_amount'))}"
+                f"  {short_addr}: sold ${self._fmt_amount(w.get('sell_amount'))} "
+                f"of ${self._fmt_amount(w.get('original_amount'))}{entry_str}"
             )
+            lines.append(f"  https://polygonscan.com/address/{addr}")
 
-        lines.extend(["", "\u26a0\ufe0f Coordinated exit — exercise caution."])
+        lines.extend([
+            "",
+            f"\U0001f517 https://polymarket.com/event/{market_id}",
+            "\u2500" * 26,
+            "\u26a0\ufe0f Coordinated exit \u2014 exercise caution.",
+        ])
+
+        return "\n".join(lines)
+
+    # ── Alert Update (consolidation) ─────────────────────────
+
+    def format_alert_update(
+        self,
+        original_alert: dict,
+        new_wallets: list[dict],
+        new_amount: float,
+        update_count: int,
+    ) -> str:
+        """Format a consolidation update for Telegram."""
+        alert_id = original_alert.get("id", "?")
+        star = original_alert.get("star_level") or 0
+        question = original_alert.get("market_question", "?")
+        direction = original_alert.get("direction", "?")
+        existing_wallets = original_alert.get("wallets") or []
+        total_wallets = len(existing_wallets) + len(new_wallets)
+        total_amount = (original_alert.get("total_amount") or 0) + new_amount
+        n_new = len(new_wallets)
+        wallet_word = "wallet" if n_new == 1 else "wallets"
+
+        lines = [
+            f"\U0001f504 UPDATE \u2014 Alert #{alert_id} ({star}\u2605)",
+            "\u2501" * 30,
+            f'\U0001f4cc "{question}" \u2192 {direction}',
+            "",
+            "\U0001f195 New activity:",
+            f"  +{n_new} new {wallet_word} (total: {total_wallets} \u2192 {direction})",
+            f"  +${new_amount:,.0f} added (total: ${total_amount:,.0f})",
+            f"  Update #{update_count}",
+            "",
+        ]
+
+        # Top new wallets (max 3)
+        sorted_new = sorted(
+            new_wallets, key=lambda w: w.get("total_amount", 0), reverse=True
+        )
+        lines.append("\U0001f517 Top new wallets:")
+        for w in sorted_new[:3]:
+            addr = w.get("address", "")
+            short = (
+                f"{addr[:6]}...{addr[-4:]}" if len(addr) > 10 else addr
+            )
+            amt = w.get("total_amount", 0)
+            odds = w.get("avg_entry_price")
+            odds_str = f" @ {odds:.2f}" if odds is not None else ""
+            lines.append(f"  \U0001f4bc {short} \u2014 ${amt:,.0f}{odds_str}")
+        lines.append("")
+
+        lines.append("\U0001f4c8 Signal strength: Increasing \u2191")
+        lines.append("\u2501" * 30)
 
         return "\n".join(lines)
 
@@ -363,17 +494,25 @@ class AlertFormatter:
 
     # ── Private helpers ──────────────────────────────────────
 
+    def _direction_odds(self, odds: float, direction: str | None) -> float:
+        """Adjust odds for direction: YES → odds as-is, NO → 1 - odds."""
+        if direction and direction.upper() == "NO":
+            return 1.0 - odds
+        return odds
+
     def _star_emoji(self, level: int) -> str:
         return "\u2b50" * level if level > 0 else "No stars"
 
     def _odds_change_str(self, alert: Alert) -> str:
         if alert.odds_at_alert is not None and alert.price_impact is not None:
-            old = alert.odds_at_alert
-            new = old + alert.price_impact
-            pct = (alert.price_impact / old * 100) if old > 0 else 0
+            old = self._direction_odds(alert.odds_at_alert, alert.direction)
+            new = self._direction_odds(
+                alert.odds_at_alert + alert.price_impact, alert.direction
+            )
+            pct = ((new - old) / old * 100) if old > 0 else 0
             return f"{old:.2f} \u2192 {new:.2f} ({pct:+.0f}%)"
         if alert.odds_at_alert is not None:
-            return f"{alert.odds_at_alert:.2f}"
+            return f"{self._direction_odds(alert.odds_at_alert, alert.direction):.2f}"
         return "N/A"
 
     def _fmt_amount(self, amount: float | None) -> str:
@@ -411,6 +550,80 @@ class AlertFormatter:
 
         return parts
 
+    def _format_wallet_detail(self, w: dict, alert: Alert) -> list[str]:
+        """Format a single wallet with trade details for detailed Telegram."""
+        lines: list[str] = []
+        addr = w.get("address", "?")
+        short_addr = f"{addr[:6]}...{addr[-4:]}" if len(addr) > 10 else addr
+        direction = w.get("direction") or alert.direction or "YES"
+        total = w.get("total_amount", 0)
+        num_trades = w.get("trade_count", 0)
+        span = w.get("time_span_hours", 0)
+
+        lines.append(f"  \U0001f4bc {short_addr}")
+
+        # Trade summary
+        if span > 0:
+            lines.append(f"     Trades: {num_trades} transactions in {span}h")
+        else:
+            lines.append(f"     Trades: {num_trades} transaction{'s' if num_trades != 1 else ''}")
+
+        # Individual trades (max 5)
+        # Note: trade prices are already direction-specific from Polymarket API
+        trades = w.get("trades") or []
+        for i, t in enumerate(trades[:5]):
+            amt = t.get("amount", 0)
+            price = t.get("price", 0)
+            ts_str = self._format_trade_time(t.get("timestamp"))
+            lines.append(
+                f"     #{i+1}: ${amt:,.0f} @ {price:.2f} odds ({ts_str})"
+            )
+        if len(trades) > 5:
+            lines.append(f"     ... and {len(trades) - 5} more trades")
+
+        # Total + avg entry (avg_entry_price already direction-specific)
+        avg_price = w.get("avg_entry_price")
+        if avg_price is not None and avg_price > 0:
+            lines.append(f"     Total: ${total:,.0f} | Avg entry: {avg_price:.2f}")
+        else:
+            lines.append(f"     Total: ${total:,.0f}")
+
+        # Pattern detection from alert filters
+        pattern = self._detect_trade_pattern(alert)
+        if pattern:
+            lines.append(f"     Pattern: {pattern}")
+
+        return lines
+
+    @staticmethod
+    def _format_trade_time(ts) -> str:
+        """Format a trade timestamp as HH:MM UTC."""
+        if ts is None:
+            return "?"
+        try:
+            if isinstance(ts, str):
+                from dateutil import parser as dt_parser
+                ts = dt_parser.parse(ts)
+            return f"{ts.hour:02d}:{ts.minute:02d} UTC"
+        except Exception:
+            return "?"
+
+    @staticmethod
+    def _detect_trade_pattern(alert: Alert) -> str | None:
+        """Detect trading pattern from triggered filters."""
+        if not alert.filters_triggered:
+            return None
+        fids = {f.get("filter_id") for f in alert.filters_triggered}
+        if fids & {"B19a", "B19b", "B19c"}:
+            return "Single massive entry"
+        if "B06" in fids:
+            return "Escalating buys"
+        if "B16" in fids:
+            return "Rapid accumulation"
+        if "B01" in fids:
+            return "Drip accumulation"
+        return None
+
     def _extract_wallet_age(self, alert: Alert) -> int | None:
         """Extract wallet age from the first wallet in the alert."""
         if not alert.wallets:
@@ -420,6 +633,59 @@ class AlertFormatter:
         if age is not None:
             return int(age)
         return None
+
+    def _held_duration(self, entry_date) -> str | None:
+        """Calculate human-readable held duration from entry_date to now."""
+        if entry_date is None:
+            return None
+        try:
+            from datetime import datetime, timezone
+            if isinstance(entry_date, str):
+                from dateutil import parser as dt_parser
+                entry_date = dt_parser.parse(entry_date)
+            if entry_date.tzinfo is None:
+                entry_date = entry_date.replace(tzinfo=timezone.utc)
+            days = (datetime.now(timezone.utc) - entry_date).days
+            if days < 1:
+                return "<1 day"
+            return f"{days} day{'s' if days != 1 else ''}"
+        except Exception:
+            return None
+
+    def _calc_pnl(
+        self,
+        original_amount: float | None,
+        entry_odds: float | None,
+        current_odds: float | None,
+        direction: str | None,
+    ) -> dict | None:
+        """Calculate P&L estimate for a sell notification.
+
+        Returns dict with shares, current_value, pnl, pnl_pct,
+        entry_odds_adj, current_odds_adj. Returns None if data insufficient.
+        """
+        if not original_amount or not entry_odds or not current_odds:
+            return None
+
+        adj_entry = self._direction_odds(entry_odds, direction)
+        adj_current = self._direction_odds(current_odds, direction)
+
+        if adj_entry <= 0:
+            return None
+
+        shares = original_amount / adj_entry
+        current_value = shares * adj_current
+        pnl = current_value - original_amount
+        pnl_pct = (pnl / original_amount * 100) if original_amount > 0 else 0
+
+        return {
+            "shares": shares,
+            "current_value": current_value,
+            "pnl": pnl,
+            "pnl_pct": pnl_pct,
+            "entry_odds_adj": adj_entry,
+            "current_odds_adj": adj_current,
+        }
 
     def _is_prediction_correct(self, alert: Alert) -> bool:
         """Check if the alert's direction matches the market outcome."""

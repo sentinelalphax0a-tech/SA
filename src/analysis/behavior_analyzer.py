@@ -324,11 +324,21 @@ class BehaviorAnalyzer:
         """B23a/b — Position is a significant portion of wallet balance.
 
         B23b (>50%) takes priority over B23a (20-50%). Mutually exclusive.
+        Guards: skip when wallet_balance or accum amount < $50 (avoids
+        absurd ratios from dust balances or tiny positions).
         """
         if wallet_balance is None or wallet_balance < 50:
             return []
+        if accum.total_amount < 50:
+            return []
 
         position_ratio = accum.total_amount / wallet_balance
+
+        # Cap: ratio > 10 (1000%) means wallet_balance is post-trade
+        # residual, not representative of total assets. Skip.
+        if position_ratio > 10.0:
+            return []
+
         if position_ratio >= config.POSITION_DOMINANT_MIN:
             return [_fr(
                 config.FILTER_B23B,

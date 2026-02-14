@@ -55,6 +55,7 @@ MARKET_TIMEOUT_SECONDS: int = int(os.getenv("MARKET_TIMEOUT_SECONDS", "45"))  # 
 MAX_WALLETS_PER_MARKET: int = int(os.getenv("MAX_WALLETS_PER_MARKET", "10"))  # top N by volume
 MARKET_MIN_VOLUME_24H: float = float(os.getenv("MARKET_MIN_VOLUME_24H", "1000"))
 MARKET_SCAN_CAP: int = int(os.getenv("MARKET_SCAN_CAP", "100"))
+CROSS_SCAN_DEDUP_HOURS: int = int(os.getenv("CROSS_SCAN_DEDUP_HOURS", "24"))
 
 # ============================================================
 # ODDS RANGE
@@ -488,4 +489,12 @@ MARKET_BLACKLIST_TERMS: list[str] = [
     "over/under", "above or below",
     # Counting/metrics markets
     "how many", "number of", "count of",
+    # Crypto price speculation (low-liquidity, easy to dominate, not insider trading)
+    "will bitcoin reach", "will bitcoin dip",
+    "will ethereum reach", "will ethereum dip",
+    "will solana reach", "will solana dip",
+    "will xrp reach", "will xrp dip",
+    "price of bitcoin", "price of ethereum",
+    "price of solana", "price of xrp",
+    "btc reach", "eth reach", "sol reach",
 ]
