@@ -1,0 +1,1045 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta http-equiv="refresh" content="300">
+    <title>Sentinel Alpha Dashboard</title>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js@4"></script>
+    <style>
+        /* ── Reset & Base ──────────────────────────────── */
+        *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+        :root {
+            --bg-primary: #0d1117;
+            --bg-secondary: #161b22;
+            --bg-tertiary: #21262d;
+            --text-primary: #e6edf3;
+            --text-secondary: #8b949e;
+            --border: #30363d;
+            --green: #3fb950;
+            --red: #f85149;
+            --yellow: #d29922;
+            --blue: #58a6ff;
+            --purple: #bc8cff;
+            --star-1: #8b949e;
+            --star-2: #58a6ff;
+            --star-3: #d29922;
+            --star-4: #f0883e;
+            --star-5: #f85149;
+        }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif;
+            background: var(--bg-primary);
+            color: var(--text-primary);
+            line-height: 1.5;
+            min-height: 100vh;
+        }
+
+        a { color: var(--blue); text-decoration: none; }
+        a:hover { text-decoration: underline; }
+
+        /* ── Header ────────────────────────────────────── */
+        .header {
+            background: var(--bg-secondary);
+            border-bottom: 1px solid var(--border);
+            padding: 1.5rem 2rem;
+        }
+        .header-top {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            margin-bottom: 1rem;
+            flex-wrap: wrap;
+            gap: 0.5rem;
+        }
+        .logo {
+            font-size: 1.5rem;
+            font-weight: 700;
+            letter-spacing: 2px;
+            color: var(--text-primary);
+        }
+        .logo span { color: var(--blue); }
+        .header-updated { font-size: 0.8rem; color: var(--text-secondary); }
+
+        .stats-grid {
+            display: grid;
+            grid-template-columns: repeat(5, 1fr);
+            gap: 1rem;
+        }
+        .stat-card {
+            background: var(--bg-tertiary);
+            border: 1px solid var(--border);
+            border-radius: 8px;
+            padding: 1rem;
+            text-align: center;
+        }
+        .stat-value {
+            font-size: 1.8rem;
+            font-weight: 700;
+        }
+        .stat-label {
+            font-size: 0.75rem;
+            color: var(--text-secondary);
+            text-transform: uppercase;
+            letter-spacing: 1px;
+        }
+        .stat-green { color: var(--green); }
+        .stat-blue { color: var(--blue); }
+        .stat-yellow { color: var(--yellow); }
+        .stat-red { color: var(--red); }
+
+        /* ── Filter Bar ────────────────────────────────── */
+        .filter-bar {
+            position: sticky;
+            top: 0;
+            z-index: 100;
+            background: var(--bg-secondary);
+            border-bottom: 1px solid var(--border);
+            padding: 0.75rem 2rem;
+            display: flex;
+            align-items: center;
+            gap: 1rem;
+            flex-wrap: wrap;
+        }
+        .star-toggles { display: flex; gap: 0.25rem; }
+        .star-btn {
+            background: var(--bg-tertiary);
+            border: 1px solid var(--border);
+            color: var(--text-secondary);
+            padding: 0.35rem 0.75rem;
+            border-radius: 6px;
+            cursor: pointer;
+            font-size: 0.85rem;
+            transition: all 0.15s;
+        }
+        .star-btn.active {
+            background: var(--blue);
+            color: #fff;
+            border-color: var(--blue);
+        }
+        .star-btn:hover { border-color: var(--text-secondary); }
+
+        .filter-select, .filter-input {
+            background: var(--bg-tertiary);
+            border: 1px solid var(--border);
+            color: var(--text-primary);
+            padding: 0.35rem 0.75rem;
+            border-radius: 6px;
+            font-size: 0.85rem;
+        }
+        .filter-input { min-width: 180px; }
+        .filter-input::placeholder { color: var(--text-secondary); }
+
+        /* ── Container ─────────────────────────────────── */
+        .container { max-width: 1400px; margin: 0 auto; padding: 1.5rem 2rem; }
+        .section { margin-bottom: 2.5rem; }
+        .section-title {
+            font-size: 1.1rem;
+            font-weight: 600;
+            margin-bottom: 1rem;
+            color: var(--text-secondary);
+            text-transform: uppercase;
+            letter-spacing: 1px;
+        }
+
+        /* ── Alerts Table ──────────────────────────────── */
+        .alerts-table {
+            width: 100%;
+            border-collapse: collapse;
+            font-size: 0.9rem;
+        }
+        .alerts-table thead th {
+            background: var(--bg-tertiary);
+            padding: 0.6rem 0.75rem;
+            text-align: left;
+            font-weight: 600;
+            color: var(--text-secondary);
+            font-size: 0.75rem;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+            border-bottom: 1px solid var(--border);
+            position: sticky;
+            top: 50px;
+            z-index: 50;
+        }
+        .alerts-table tbody tr {
+            border-bottom: 1px solid var(--border);
+            cursor: pointer;
+            transition: background 0.1s;
+        }
+        .alerts-table tbody tr:hover { background: rgba(88, 166, 255, 0.05); }
+        .alerts-table td {
+            padding: 0.6rem 0.75rem;
+            vertical-align: middle;
+        }
+
+        /* Row color classes */
+        .row-winning { border-left: 3px solid var(--green); background: rgba(63, 185, 80, 0.04); }
+        .row-losing { border-left: 3px solid var(--red); background: rgba(248, 81, 73, 0.04); }
+        .row-correct { background: rgba(139, 148, 158, 0.08); }
+        .row-incorrect { background: rgba(248, 81, 73, 0.08); }
+        .row-closing-soon { border-left: 3px solid var(--yellow); background: rgba(210, 153, 34, 0.04); }
+        .row-neutral { border-left: 3px solid transparent; }
+
+        .pnl-positive { color: var(--green); font-weight: 600; }
+        .pnl-negative { color: var(--red); font-weight: 600; }
+
+        .status-badge {
+            display: inline-block;
+            padding: 0.15rem 0.5rem;
+            border-radius: 12px;
+            font-size: 0.75rem;
+            font-weight: 600;
+        }
+        .badge-active { background: rgba(63, 185, 80, 0.15); color: var(--green); }
+        .badge-correct { background: rgba(139, 148, 158, 0.15); color: var(--text-secondary); }
+        .badge-incorrect { background: rgba(248, 81, 73, 0.15); color: var(--red); }
+
+        .market-question {
+            max-width: 300px;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+        }
+
+        .star-cell { white-space: nowrap; }
+        .star-1 { color: var(--star-1); }
+        .star-2 { color: var(--star-2); }
+        .star-3 { color: var(--star-3); }
+        .star-4 { color: var(--star-4); }
+        .star-5 { color: var(--star-5); }
+
+        /* ── Expanded Detail ───────────────────────────── */
+        .detail-row { display: none; }
+        .detail-row.open { display: table-row; }
+        .detail-cell {
+            padding: 1.25rem !important;
+            background: var(--bg-secondary);
+            border-left: 3px solid var(--blue);
+        }
+        .detail-grid {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 1.5rem;
+        }
+        .detail-section h4 {
+            font-size: 0.85rem;
+            color: var(--text-secondary);
+            margin-bottom: 0.5rem;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+        }
+        .filter-list { list-style: none; }
+        .filter-list li {
+            padding: 0.25rem 0;
+            font-size: 0.85rem;
+            font-family: monospace;
+        }
+        .filter-points-pos { color: var(--green); }
+        .filter-points-neg { color: var(--red); }
+
+        .wallet-card {
+            background: var(--bg-tertiary);
+            border: 1px solid var(--border);
+            border-radius: 6px;
+            padding: 0.75rem;
+            margin-bottom: 0.5rem;
+            font-size: 0.85rem;
+        }
+        .wallet-addr {
+            font-family: monospace;
+            color: var(--blue);
+            font-size: 0.8rem;
+        }
+        .wallet-meta {
+            color: var(--text-secondary);
+            font-size: 0.8rem;
+            margin-top: 0.25rem;
+        }
+        .wallet-trades {
+            margin-top: 0.35rem;
+            font-size: 0.8rem;
+            color: var(--text-secondary);
+        }
+        .wallet-links { margin-top: 0.35rem; font-size: 0.8rem; }
+        .wallet-links a { margin-right: 1rem; }
+
+        .odds-track {
+            display: flex;
+            gap: 1.5rem;
+            font-size: 0.85rem;
+            margin-top: 0.5rem;
+        }
+        .odds-track span { color: var(--text-secondary); }
+        .odds-track strong { color: var(--text-primary); }
+
+        /* ── Star Summary Cards ────────────────────────── */
+        .star-cards {
+            display: grid;
+            grid-template-columns: repeat(5, 1fr);
+            gap: 1rem;
+        }
+        .star-summary-card {
+            background: var(--bg-secondary);
+            border: 1px solid var(--border);
+            border-radius: 8px;
+            padding: 1.25rem;
+            text-align: center;
+        }
+        .star-summary-card h3 {
+            font-size: 1rem;
+            margin-bottom: 0.75rem;
+        }
+        .star-summary-stat {
+            display: flex;
+            justify-content: space-between;
+            font-size: 0.8rem;
+            padding: 0.15rem 0;
+        }
+        .star-summary-stat .label { color: var(--text-secondary); }
+        .accuracy-bar-bg {
+            height: 8px;
+            background: var(--bg-tertiary);
+            border-radius: 4px;
+            margin-top: 0.75rem;
+            overflow: hidden;
+        }
+        .accuracy-bar-fill {
+            height: 100%;
+            border-radius: 4px;
+            transition: width 0.3s;
+        }
+        .avg-return { font-size: 0.9rem; font-weight: 600; margin-top: 0.5rem; }
+
+        /* ── Charts ────────────────────────────────────── */
+        .charts-grid {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 1.5rem;
+        }
+        .chart-card {
+            background: var(--bg-secondary);
+            border: 1px solid var(--border);
+            border-radius: 8px;
+            padding: 1.25rem;
+        }
+        .chart-card h4 {
+            font-size: 0.85rem;
+            color: var(--text-secondary);
+            margin-bottom: 1rem;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+        }
+        .chart-card canvas { max-height: 280px; }
+
+        /* ── Closing Soon ──────────────────────────────── */
+        .closing-table {
+            width: 100%;
+            border-collapse: collapse;
+            font-size: 0.85rem;
+        }
+        .closing-table th {
+            text-align: left;
+            padding: 0.5rem 0.75rem;
+            color: var(--text-secondary);
+            font-size: 0.75rem;
+            text-transform: uppercase;
+            border-bottom: 1px solid var(--border);
+        }
+        .closing-table td {
+            padding: 0.5rem 0.75rem;
+            border-bottom: 1px solid var(--border);
+        }
+        .closing-urgent { color: var(--yellow); font-weight: 600; }
+
+        /* ── Resolution Timeline ───────────────────────── */
+        .timeline { position: relative; padding-left: 2rem; }
+        .timeline::before {
+            content: '';
+            position: absolute;
+            left: 0.5rem;
+            top: 0;
+            bottom: 0;
+            width: 2px;
+            background: var(--border);
+        }
+        .timeline-item {
+            position: relative;
+            padding: 0.5rem 0 1rem 0;
+        }
+        .timeline-item::before {
+            content: '';
+            position: absolute;
+            left: -1.65rem;
+            top: 0.75rem;
+            width: 10px;
+            height: 10px;
+            border-radius: 50%;
+            border: 2px solid var(--border);
+            background: var(--bg-primary);
+        }
+        .timeline-item.correct::before { background: var(--green); border-color: var(--green); }
+        .timeline-item.incorrect::before { background: var(--red); border-color: var(--red); }
+        .timeline-date { font-size: 0.75rem; color: var(--text-secondary); }
+        .timeline-text { font-size: 0.85rem; }
+        .timeline-return { font-weight: 600; margin-left: 0.5rem; }
+
+        .empty-state {
+            text-align: center;
+            padding: 3rem;
+            color: var(--text-secondary);
+        }
+
+        /* ── Footer ────────────────────────────────────── */
+        .footer {
+            border-top: 1px solid var(--border);
+            padding: 1.5rem 2rem;
+            text-align: center;
+            color: var(--text-secondary);
+            font-size: 0.8rem;
+        }
+
+        /* ── Responsive ────────────────────────────────── */
+        @media (max-width: 1024px) {
+            .stats-grid { grid-template-columns: repeat(3, 1fr); }
+            .star-cards { grid-template-columns: repeat(3, 1fr); }
+            .charts-grid { grid-template-columns: 1fr; }
+            .detail-grid { grid-template-columns: 1fr; }
+        }
+        @media (max-width: 768px) {
+            .header, .filter-bar, .container { padding-left: 1rem; padding-right: 1rem; }
+            .stats-grid { grid-template-columns: 1fr 1fr; }
+            .star-cards { grid-template-columns: 1fr 1fr; }
+            .col-score, .col-pnl, .col-change { display: none; }
+            .market-question { max-width: 160px; }
+            .filter-bar { gap: 0.5rem; }
+            .filter-input { min-width: 120px; }
+        }
+        @media (max-width: 480px) {
+            .stats-grid { grid-template-columns: 1fr; }
+            .star-cards { grid-template-columns: 1fr; }
+            .col-entry, .col-current { display: none; }
+        }
+
+        /* ── Alert count ───────────────────────────────── */
+        .alert-count {
+            font-size: 0.85rem;
+            color: var(--text-secondary);
+            margin-bottom: 0.75rem;
+        }
+    </style>
+</head>
+<body>
+
+<!-- ── Header ──────────────────────────────────────────── -->
+<div class="header">
+    <div class="header-top">
+        <div class="logo">SENTINEL <span>ALPHA</span></div>
+        <div class="header-updated">Last updated: <span id="last-updated"></span></div>
+    </div>
+    <div class="stats-grid" id="stats-grid"></div>
+</div>
+
+<!-- ── Filter Bar ──────────────────────────────────────── -->
+<div class="filter-bar">
+    <div class="star-toggles" id="star-toggles">
+        <button class="star-btn active" data-star="all">All</button>
+        <button class="star-btn active" data-star="5">5&#9733;</button>
+        <button class="star-btn active" data-star="4">4&#9733;</button>
+        <button class="star-btn active" data-star="3">3&#9733;</button>
+        <button class="star-btn active" data-star="2">2&#9733;</button>
+        <button class="star-btn active" data-star="1">1&#9733;</button>
+    </div>
+    <select class="filter-select" id="status-filter">
+        <option value="all">All Status</option>
+        <option value="pending">Active</option>
+        <option value="correct">Correct</option>
+        <option value="incorrect">Incorrect</option>
+    </select>
+    <select class="filter-select" id="sort-by">
+        <option value="date">Date &#8595;</option>
+        <option value="score">Score &#8595;</option>
+        <option value="pnl">P&amp;L &#8595;</option>
+        <option value="closing">Closing Soon</option>
+    </select>
+    <input type="text" class="filter-input" id="search-input" placeholder="Search markets...">
+</div>
+
+<!-- ── Main Content ────────────────────────────────────── -->
+<div class="container">
+
+    <!-- Alerts Table -->
+    <div class="section">
+        <div class="section-title">Alerts</div>
+        <div class="alert-count" id="alert-count"></div>
+        <table class="alerts-table">
+            <thead>
+                <tr>
+                    <th>&#9733;</th>
+                    <th>Market</th>
+                    <th>Dir</th>
+                    <th class="col-score">Score</th>
+                    <th class="col-entry">Entry</th>
+                    <th class="col-current">Current</th>
+                    <th class="col-change">Change</th>
+                    <th class="col-pnl">P&amp;L</th>
+                    <th>Status</th>
+                    <th>Time</th>
+                </tr>
+            </thead>
+            <tbody id="alerts-body"></tbody>
+        </table>
+    </div>
+
+    <!-- Star Summary Cards -->
+    <div class="section">
+        <div class="section-title">Performance by Star Level</div>
+        <div class="star-cards" id="star-cards"></div>
+    </div>
+
+    <!-- Charts -->
+    <div class="section">
+        <div class="section-title">Analytics</div>
+        <div class="charts-grid">
+            <div class="chart-card">
+                <h4>Accuracy Over Time (3+ Stars)</h4>
+                <canvas id="chart-accuracy"></canvas>
+            </div>
+            <div class="chart-card">
+                <h4>Alerts Per Day</h4>
+                <canvas id="chart-alerts-day"></canvas>
+            </div>
+            <div class="chart-card">
+                <h4>Cumulative P&amp;L ($100/alert, 3+ Stars)</h4>
+                <canvas id="chart-pnl"></canvas>
+            </div>
+            <div class="chart-card">
+                <h4>Top Filters (Correct vs Incorrect)</h4>
+                <canvas id="chart-filters"></canvas>
+            </div>
+        </div>
+    </div>
+
+    <!-- Closing Soon -->
+    <div class="section">
+        <div class="section-title">Closing Soon (&lt;7 days)</div>
+        <div id="closing-soon"></div>
+    </div>
+
+    <!-- Resolution History -->
+    <div class="section">
+        <div class="section-title">Resolution History</div>
+        <div class="timeline" id="resolution-timeline"></div>
+    </div>
+</div>
+
+<!-- ── Footer ──────────────────────────────────────────── -->
+<div class="footer">
+    Last updated: <span id="footer-updated"></span> | Data from Supabase | Sentinel Alpha
+</div>
+
+<!-- ── Data & Scripts ──────────────────────────────────── -->
+<script>
+const ALERTS_DATA = [[]];
+const STATS = {{"total_alerts": 0, "active_alerts": 0, "resolved_alerts": 0, "accuracy_3plus": null, "by_star": {"1": {"count": 0, "correct": 0, "incorrect": 0, "pending": 0, "accuracy": null, "avg_return": null}, "2": {"count": 0, "correct": 0, "incorrect": 0, "pending": 0, "accuracy": null, "avg_return": null}, "3": {"count": 0, "correct": 0, "incorrect": 0, "pending": 0, "accuracy": null, "avg_return": null}, "4": {"count": 0, "correct": 0, "incorrect": 0, "pending": 0, "accuracy": null, "avg_return": null}, "5": {"count": 0, "correct": 0, "incorrect": 0, "pending": 0, "accuracy": null, "avg_return": null}}, "alerts_per_day": [], "accuracy_over_time": [], "cumulative_pnl": [], "filter_distribution": [], "closing_soon": [], "resolution_history": [], "last_scan": {"id": 19, "timestamp": "2026-02-14T11:05:17.961491+00:00", "markets_scanned": 100, "transactions_analyzed": 83, "wallets_analyzed": 17, "alerts_generated": 10, "alerts_published_x": 0, "alerts_published_tg": 6, "duration_seconds": 157.068782806396, "errors": null, "status": "success"}}};
+const GENERATED_AT = "2026-02-14T15:54:03Z";
+
+// ── State ────────────────────────────────────────────
+const state = {
+    starFilter: new Set([1, 2, 3, 4, 5]),
+    statusFilter: 'all',
+    sortBy: 'date',
+    searchQuery: '',
+    expandedRows: new Set(),
+};
+
+// ── Helpers ──────────────────────────────────────────
+function formatAmount(n) {
+    if (n == null) return '--';
+    if (Math.abs(n) >= 1000) return (n >= 0 ? '+$' : '-$') + Math.abs(n / 1000).toFixed(1) + 'K';
+    return (n >= 0 ? '+$' : '-$') + Math.abs(n).toFixed(0);
+}
+
+function formatOdds(o) {
+    if (o == null) return '--';
+    return o.toFixed(2);
+}
+
+function starEmoji(level) {
+    return '\u2605'.repeat(level || 0);
+}
+
+function truncAddr(addr) {
+    if (!addr || addr.length < 10) return addr || '';
+    return addr.slice(0, 6) + '...' + addr.slice(-4);
+}
+
+// ── Render Header ────────────────────────────────────
+function renderHeader() {
+    document.getElementById('last-updated').textContent = GENERATED_AT;
+    document.getElementById('footer-updated').textContent = GENERATED_AT;
+
+    const s = STATS;
+    const scanTime = s.last_scan && s.last_scan.timestamp
+        ? new Date(s.last_scan.timestamp).toLocaleString() : '--';
+    const scanStatus = s.last_scan && s.last_scan.status ? s.last_scan.status : '--';
+
+    document.getElementById('stats-grid').innerHTML = `
+        <div class="stat-card">
+            <div class="stat-value">${s.total_alerts || 0}</div>
+            <div class="stat-label">Total Alerts</div>
+        </div>
+        <div class="stat-card">
+            <div class="stat-value stat-green">${s.active_alerts || 0}</div>
+            <div class="stat-label">Active</div>
+        </div>
+        <div class="stat-card">
+            <div class="stat-value stat-blue">${s.resolved_alerts || 0}</div>
+            <div class="stat-label">Resolved</div>
+        </div>
+        <div class="stat-card">
+            <div class="stat-value stat-yellow">${s.accuracy_3plus != null ? s.accuracy_3plus + '%' : '--'}</div>
+            <div class="stat-label">Accuracy 3+&#9733;</div>
+        </div>
+        <div class="stat-card">
+            <div class="stat-value" style="font-size:1rem">${scanTime}</div>
+            <div class="stat-label">Last Scan (${scanStatus})</div>
+        </div>
+    `;
+}
+
+// ── Render Alerts Table ──────────────────────────────
+function getFiltered() {
+    return ALERTS_DATA.filter(a => {
+        const star = a.star_level || 0;
+        if (!state.starFilter.has(star)) return false;
+        if (state.statusFilter !== 'all') {
+            const outcome = a.outcome || 'pending';
+            if (state.statusFilter !== outcome) return false;
+        }
+        if (state.searchQuery) {
+            const q = (a.market_question || '').toLowerCase();
+            if (!q.includes(state.searchQuery.toLowerCase())) return false;
+        }
+        return true;
+    });
+}
+
+function sortAlerts(arr) {
+    const s = state.sortBy;
+    return [...arr].sort((a, b) => {
+        if (s === 'score') return (b.score || 0) - (a.score || 0);
+        if (s === 'pnl') return (b.dollar_pnl || 0) - (a.dollar_pnl || 0);
+        if (s === 'closing') {
+            const ta = a.time_left_seconds || Infinity;
+            const tb = b.time_left_seconds || Infinity;
+            return ta - tb;
+        }
+        // date (default)
+        return (b.created_at || '').localeCompare(a.created_at || '');
+    });
+}
+
+function renderTable() {
+    const filtered = sortAlerts(getFiltered());
+    const body = document.getElementById('alerts-body');
+
+    document.getElementById('alert-count').textContent =
+        `Showing ${filtered.length} of ${ALERTS_DATA.length} alerts`;
+
+    if (filtered.length === 0) {
+        body.innerHTML = '<tr><td colspan="10" class="empty-state">No alerts match the current filters</td></tr>';
+        return;
+    }
+
+    let html = '';
+    for (const a of filtered) {
+        const id = a.id || 0;
+        const star = a.star_level || 0;
+        const rowCls = 'row-' + (a.row_class || 'neutral');
+        const isOpen = state.expandedRows.has(id);
+        const outcome = a.outcome || 'pending';
+
+        // Status badge
+        let statusHtml = '';
+        if (outcome === 'pending') statusHtml = '<span class="status-badge badge-active">Active</span>';
+        else if (outcome === 'correct') statusHtml = '<span class="status-badge badge-correct">Correct</span>';
+        else statusHtml = '<span class="status-badge badge-incorrect">Incorrect</span>';
+
+        // P&L
+        let pnlHtml = '--';
+        if (a.dollar_pnl != null) {
+            const cls = a.dollar_pnl >= 0 ? 'pnl-positive' : 'pnl-negative';
+            pnlHtml = `<span class="${cls}">${formatAmount(a.dollar_pnl)}</span>`;
+        }
+
+        // Change
+        let changeHtml = '--';
+        if (a.odds_change_pct != null) {
+            const sign = a.odds_change_pct >= 0 ? '+' : '';
+            const cls = a.odds_change_pct >= 0 ? 'pnl-positive' : 'pnl-negative';
+            changeHtml = `<span class="${cls}">${sign}${a.odds_change_pct.toFixed(1)}%</span>`;
+        }
+
+        // Time column
+        const timeCol = outcome === 'pending' ? (a.time_left || a.time_ago || '') : 'Resolved';
+
+        html += `
+        <tr class="${rowCls}" onclick="toggleRow(${id})" data-id="${id}">
+            <td class="star-cell star-${star}">${starEmoji(star)}</td>
+            <td class="market-question" title="${(a.market_question || '').replace(/"/g, '&quot;')}">${a.market_question || ''}</td>
+            <td>${a.direction || ''}</td>
+            <td class="col-score">${a.score || 0}</td>
+            <td class="col-entry">${formatOdds(a.odds_at_alert)}</td>
+            <td class="col-current">${formatOdds(a.current_odds)}</td>
+            <td class="col-change">${changeHtml}</td>
+            <td class="col-pnl">${pnlHtml}</td>
+            <td>${statusHtml}</td>
+            <td>${timeCol}</td>
+        </tr>`;
+
+        // Detail row
+        html += `<tr class="detail-row ${isOpen ? 'open' : ''}" id="detail-${id}">
+            <td colspan="10" class="detail-cell">${renderDetail(a)}</td>
+        </tr>`;
+    }
+    body.innerHTML = html;
+}
+
+function renderDetail(a) {
+    // Filters
+    const filters = a.filters_triggered || [];
+    let filtersHtml = '<ul class="filter-list">';
+    for (const f of filters) {
+        const pts = f.points || 0;
+        const cls = pts >= 0 ? 'filter-points-pos' : 'filter-points-neg';
+        const sign = pts >= 0 ? '+' : '';
+        const detail = f.details ? ` -- ${f.details}` : '';
+        filtersHtml += `<li><span class="${cls}">${f.filter_id}: ${sign}${pts}</span> (${f.filter_name || ''})${detail}</li>`;
+    }
+    filtersHtml += '</ul>';
+
+    // Wallets
+    const wallets = a.wallets || [];
+    let walletsHtml = '';
+    for (const w of wallets.slice(0, 5)) {
+        const addr = w.address || '';
+        const trades = w.trades || [];
+        let tradesHtml = '';
+        for (const t of trades.slice(0, 5)) {
+            const ts = t.timestamp ? new Date(t.timestamp).toLocaleTimeString([], {hour:'2-digit', minute:'2-digit'}) : '';
+            tradesHtml += `<div>$${(t.amount || 0).toLocaleString()} @ ${(t.price || 0).toFixed(2)} (${ts})</div>`;
+        }
+        if (trades.length > 5) tradesHtml += `<div>... +${trades.length - 5} more</div>`;
+
+        const polygonscan = `https://polygonscan.com/address/${addr}`;
+        walletsHtml += `
+        <div class="wallet-card">
+            <div class="wallet-addr">${truncAddr(addr)}</div>
+            <div class="wallet-meta">Total: $${(w.total_amount || 0).toLocaleString()} | ${w.trade_count || 0} trades | ${(w.time_span_hours || 0).toFixed(1)}h span</div>
+            ${w.avg_entry_price ? `<div class="wallet-meta">Avg entry: ${w.avg_entry_price.toFixed(4)}</div>` : ''}
+            ${tradesHtml ? `<div class="wallet-trades">${tradesHtml}</div>` : ''}
+            <div class="wallet-links">
+                <a href="${polygonscan}" target="_blank" rel="noopener">Polygonscan</a>
+                <a href="${a.polymarket_url || '#'}" target="_blank" rel="noopener">Polymarket</a>
+            </div>
+        </div>`;
+    }
+
+    // Odds tracking
+    const oddsHtml = `
+    <div class="odds-track">
+        <span>Entry: <strong>${formatOdds(a.odds_at_alert)}</strong></span>
+        <span>Current: <strong>${formatOdds(a.current_odds)}</strong></span>
+        <span>Max: <strong>${formatOdds(a.odds_max)}</strong></span>
+        <span>Min: <strong>${formatOdds(a.odds_min)}</strong></span>
+    </div>`;
+
+    // Score breakdown
+    const rawScore = a.score_raw || a.score || 0;
+    const mult = a.multiplier || 1.0;
+    const finalScore = a.score || 0;
+
+    // News
+    let newsHtml = '';
+    if (a.has_news && a.news_summary) {
+        newsHtml = `
+        <div class="detail-section" style="margin-top:1rem">
+            <h4>News Context</h4>
+            <p style="font-size:0.85rem;color:var(--text-secondary)">"${a.news_summary}"</p>
+        </div>`;
+    }
+
+    return `
+    <div class="detail-grid">
+        <div class="detail-section">
+            <h4>Filters (${filters.length} triggered, ${rawScore} raw x ${mult.toFixed(2)} = ${finalScore})</h4>
+            ${filtersHtml}
+            ${oddsHtml}
+            ${newsHtml}
+        </div>
+        <div class="detail-section">
+            <h4>Wallets (${wallets.length})</h4>
+            ${walletsHtml || '<p class="empty-state">No wallet data</p>'}
+        </div>
+    </div>`;
+}
+
+function toggleRow(id) {
+    if (state.expandedRows.has(id)) {
+        state.expandedRows.delete(id);
+    } else {
+        state.expandedRows.add(id);
+    }
+    const el = document.getElementById('detail-' + id);
+    if (el) el.classList.toggle('open');
+}
+
+// ── Render Star Cards ────────────────────────────────
+function renderStarCards() {
+    const container = document.getElementById('star-cards');
+    const colors = { 1: 'var(--star-1)', 2: 'var(--star-2)', 3: 'var(--star-3)', 4: 'var(--star-4)', 5: 'var(--star-5)' };
+    let html = '';
+
+    for (let s = 5; s >= 1; s--) {
+        const data = (STATS.by_star || {})[String(s)] || {};
+        const acc = data.accuracy;
+        const accPct = acc != null ? acc : 0;
+        const color = colors[s];
+        const avgRet = data.avg_return;
+
+        html += `
+        <div class="star-summary-card" style="border-top: 3px solid ${color}">
+            <h3 style="color:${color}">${starEmoji(s)} ${s} Stars</h3>
+            <div class="star-summary-stat"><span class="label">Total</span><span>${data.count || 0}</span></div>
+            <div class="star-summary-stat"><span class="label">Correct</span><span style="color:var(--green)">${data.correct || 0}</span></div>
+            <div class="star-summary-stat"><span class="label">Incorrect</span><span style="color:var(--red)">${data.incorrect || 0}</span></div>
+            <div class="star-summary-stat"><span class="label">Pending</span><span>${data.pending || 0}</span></div>
+            <div class="star-summary-stat"><span class="label">Accuracy</span><span>${acc != null ? acc + '%' : '--'}</span></div>
+            <div class="accuracy-bar-bg">
+                <div class="accuracy-bar-fill" style="width:${accPct}%; background:${color}"></div>
+            </div>
+            <div class="avg-return" style="color:${avgRet != null && avgRet >= 0 ? 'var(--green)' : 'var(--red)'}">
+                ${avgRet != null ? (avgRet >= 0 ? '+' : '') + avgRet.toFixed(1) + '% avg' : '--'}
+            </div>
+        </div>`;
+    }
+    container.innerHTML = html;
+}
+
+// ── Render Charts ────────────────────────────────────
+function renderCharts() {
+    const chartDefaults = {
+        responsive: true,
+        maintainAspectRatio: true,
+        plugins: { legend: { labels: { color: '#8b949e', font: { size: 11 } } } },
+        scales: {
+            x: { ticks: { color: '#8b949e', font: { size: 10 } }, grid: { color: '#21262d' } },
+            y: { ticks: { color: '#8b949e', font: { size: 10 } }, grid: { color: '#21262d' } },
+        },
+    };
+
+    // 1. Accuracy over time
+    const accData = STATS.accuracy_over_time || [];
+    if (accData.length > 0) {
+        new Chart(document.getElementById('chart-accuracy'), {
+            type: 'line',
+            data: {
+                labels: accData.map(d => d.date),
+                datasets: [{
+                    label: 'Accuracy %',
+                    data: accData.map(d => d.accuracy),
+                    borderColor: '#d29922',
+                    backgroundColor: 'rgba(210,153,34,0.1)',
+                    fill: true,
+                    tension: 0.3,
+                    pointRadius: 3,
+                }]
+            },
+            options: { ...chartDefaults, scales: { ...chartDefaults.scales, y: { ...chartDefaults.scales.y, min: 0, max: 100 } } },
+        });
+    }
+
+    // 2. Alerts per day
+    const dayData = STATS.alerts_per_day || [];
+    if (dayData.length > 0) {
+        const starColors = { '5': '#f85149', '4': '#f0883e', '3': '#d29922', '2': '#58a6ff', '1': '#8b949e', '0': '#484f58' };
+        const allStars = ['5', '4', '3', '2', '1'];
+        const datasets = allStars.map(s => ({
+            label: s + '\u2605',
+            data: dayData.map(d => (d.by_star || {})[s] || 0),
+            backgroundColor: starColors[s],
+        }));
+        new Chart(document.getElementById('chart-alerts-day'), {
+            type: 'bar',
+            data: { labels: dayData.map(d => d.date), datasets },
+            options: { ...chartDefaults, plugins: { ...chartDefaults.plugins }, scales: { ...chartDefaults.scales, x: { ...chartDefaults.scales.x, stacked: true }, y: { ...chartDefaults.scales.y, stacked: true } } },
+        });
+    }
+
+    // 3. Cumulative P&L
+    const pnlData = STATS.cumulative_pnl || [];
+    if (pnlData.length > 0) {
+        new Chart(document.getElementById('chart-pnl'), {
+            type: 'line',
+            data: {
+                labels: pnlData.map(d => d.date),
+                datasets: [{
+                    label: 'Cumulative P&L ($)',
+                    data: pnlData.map(d => d.pnl),
+                    borderColor: '#3fb950',
+                    backgroundColor: 'rgba(63,185,80,0.1)',
+                    fill: true,
+                    tension: 0.3,
+                    pointRadius: 2,
+                }]
+            },
+            options: chartDefaults,
+        });
+    }
+
+    // 4. Filter distribution
+    const filterData = STATS.filter_distribution || [];
+    if (filterData.length > 0) {
+        new Chart(document.getElementById('chart-filters'), {
+            type: 'bar',
+            data: {
+                labels: filterData.map(d => d.filter_id + ' ' + d.name),
+                datasets: [
+                    { label: 'Correct', data: filterData.map(d => d.correct), backgroundColor: '#3fb950' },
+                    { label: 'Incorrect', data: filterData.map(d => d.incorrect), backgroundColor: '#f85149' },
+                ],
+            },
+            options: { ...chartDefaults, indexAxis: 'y' },
+        });
+    }
+}
+
+// ── Render Closing Soon ──────────────────────────────
+function renderClosingSoon() {
+    const items = STATS.closing_soon || [];
+    const container = document.getElementById('closing-soon');
+    if (items.length === 0) {
+        container.innerHTML = '<p class="empty-state">No markets closing within 7 days</p>';
+        return;
+    }
+
+    let html = `<table class="closing-table">
+        <thead><tr>
+            <th>Market</th><th>Stars</th><th>Dir</th><th>Entry</th><th>Current</th><th>Closes In</th>
+        </tr></thead><tbody>`;
+
+    for (const c of items) {
+        const urgent = c.time_left_seconds < 86400 ? 'closing-urgent' : '';
+        html += `<tr>
+            <td>${c.market_question || ''}</td>
+            <td>${starEmoji(c.star_level || 0)}</td>
+            <td>${c.direction || ''}</td>
+            <td>${formatOdds(c.odds_at_alert)}</td>
+            <td>${formatOdds(c.current_odds)}</td>
+            <td class="${urgent}">${c.time_left || ''}</td>
+        </tr>`;
+    }
+    html += '</tbody></table>';
+    container.innerHTML = html;
+}
+
+// ── Render Resolution Timeline ───────────────────────
+function renderResolutionTimeline() {
+    const items = STATS.resolution_history || [];
+    const container = document.getElementById('resolution-timeline');
+    if (items.length === 0) {
+        container.innerHTML = '<p class="empty-state">No resolutions yet</p>';
+        return;
+    }
+
+    let html = '';
+    for (const r of items.slice(0, 30)) {
+        const icon = r.outcome === 'correct' ? '\u2705' : '\u274C';
+        const cls = r.outcome || 'pending';
+        const ret = r.actual_return != null
+            ? `<span class="timeline-return ${r.actual_return >= 0 ? 'pnl-positive' : 'pnl-negative'}">(${r.actual_return >= 0 ? '+' : ''}${r.actual_return.toFixed(0)}%)</span>`
+            : '';
+
+        html += `
+        <div class="timeline-item ${cls}">
+            <div class="timeline-date">${r.date || ''}</div>
+            <div class="timeline-text">
+                ${icon} "${r.market_question || ''}" &rarr; ${r.direction || ''} ${r.outcome || ''} ${ret}
+            </div>
+        </div>`;
+    }
+    container.innerHTML = html;
+}
+
+// ── Event Listeners ──────────────────────────────────
+function setupEventListeners() {
+    // Star toggles
+    document.querySelectorAll('.star-btn').forEach(btn => {
+        btn.addEventListener('click', () => {
+            const val = btn.dataset.star;
+            if (val === 'all') {
+                const allActive = state.starFilter.size === 5;
+                if (allActive) {
+                    state.starFilter.clear();
+                    document.querySelectorAll('.star-btn').forEach(b => b.classList.remove('active'));
+                } else {
+                    for (let i = 1; i <= 5; i++) state.starFilter.add(i);
+                    document.querySelectorAll('.star-btn').forEach(b => b.classList.add('active'));
+                }
+            } else {
+                const star = parseInt(val);
+                if (state.starFilter.has(star)) {
+                    state.starFilter.delete(star);
+                    btn.classList.remove('active');
+                } else {
+                    state.starFilter.add(star);
+                    btn.classList.add('active');
+                }
+                // Update All button
+                const allBtn = document.querySelector('.star-btn[data-star="all"]');
+                if (state.starFilter.size === 5) allBtn.classList.add('active');
+                else allBtn.classList.remove('active');
+            }
+            renderTable();
+        });
+    });
+
+    // Status filter
+    document.getElementById('status-filter').addEventListener('change', (e) => {
+        state.statusFilter = e.target.value;
+        renderTable();
+    });
+
+    // Sort
+    document.getElementById('sort-by').addEventListener('change', (e) => {
+        state.sortBy = e.target.value;
+        renderTable();
+    });
+
+    // Search (debounced)
+    let searchTimeout;
+    document.getElementById('search-input').addEventListener('input', (e) => {
+        clearTimeout(searchTimeout);
+        searchTimeout = setTimeout(() => {
+            state.searchQuery = e.target.value;
+            renderTable();
+        }, 250);
+    });
+}
+
+// ── Init ─────────────────────────────────────────────
+document.addEventListener('DOMContentLoaded', () => {
+    renderHeader();
+    renderTable();
+    renderStarCards();
+    renderCharts();
+    renderClosingSoon();
+    renderResolutionTimeline();
+    setupEventListeners();
+});
+</script>
+</body>
+</html>
