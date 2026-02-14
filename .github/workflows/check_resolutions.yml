@@ -25,6 +25,6 @@ jobs:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
-          TELEGRAM_CHANNEL_ID: ${{ secrets.TELEGRAM_CHANNEL_ID }}
+          TELEGRAM_CHANNEL_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
           TELEGRAM_PRIVATE_CHANNEL_ID: ${{ secrets.TELEGRAM_PRIVATE_CHANNEL_ID }}
         run: python -m src.scripts.check_resolutions
