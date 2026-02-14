@@ -433,6 +433,7 @@ def generate(output_dir: Path | None = None) -> Path:
 
     db = SupabaseClient()
     data = fetch_data(db)
+    print(f"Fetched {len(data['alerts'])} alerts, {len(data['markets'])} markets")
     logger.info("Fetched %d alerts, %d markets", len(data["alerts"]), len(data["markets"]))
 
     enriched = enrich_alerts(data["alerts"], data["markets"])

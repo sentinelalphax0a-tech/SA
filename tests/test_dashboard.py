@@ -83,13 +83,13 @@ def _market(**overrides) -> dict:
 
 class TestBuildHtml:
     def test_injects_alerts_data(self):
-        template = '<script>const ALERTS_DATA = [/* __ALERTS_DATA__ */];</script>'
+        template = '<script>const ALERTS_DATA = /* __ALERTS_DATA__ */;</script>'
         html = build_html('[{"id":1}]', '{}', "2026-01-01T00:00:00Z", template)
         assert '[{"id":1}]' in html
         assert "__ALERTS_DATA__" not in html
 
     def test_injects_stats_data(self):
-        template = '<script>const STATS = {/* __STATS_DATA__ */};</script>'
+        template = '<script>const STATS = /* __STATS_DATA__ */;</script>'
         html = build_html('[]', '{"total":5}', "2026-01-01T00:00:00Z", template)
         assert '{"total":5}' in html
         assert "__STATS_DATA__" not in html
