@@ -266,25 +266,25 @@ class TestOddsConviction:
         results = analyzer._check_odds_conviction(trades)
         assert len(results) == 0
 
-    def test_b25_no_contra_consenso(self):
-        """NO buyer @ YES price 0.95 → effective = 0.05 < 0.10 → B25a (contrarian).
+    def test_b25_no_contrarian(self):
+        """NO buyer, CLOB price=0.05 → B25a (extreme contrarian).
 
-        Market thinks YES=95%.  NO buyer bets against strong consensus.
+        CLOB returns NO token price=0.05. Low price = contrarian.
         """
         analyzer = BehaviorAnalyzer()
-        trades = [_make_trade(price=0.95, direction="NO")]
+        trades = [_make_trade(price=0.05, direction="NO")]
         results = analyzer._check_odds_conviction(trades)
         assert len(results) == 1
         assert results[0].filter_id == "B25a"
         assert results[0].points == config.FILTER_B25A["points"]  # 25
 
-    def test_b25_si_contra_consenso(self):
-        """NO buyer @ YES price 0.05 → effective = 0.95 → no B25 (with consensus).
+    def test_b25_no_consensus(self):
+        """NO buyer, CLOB price=0.87 → no B25 (with consensus).
 
-        Market thinks YES=5%, NO=95%.  NO buyer agrees with consensus.
+        CLOB returns NO token price=0.87. High price = consensus, not contrarian.
         """
         analyzer = BehaviorAnalyzer()
-        trades = [_make_trade(price=0.05, direction="NO")]
+        trades = [_make_trade(price=0.87, direction="NO")]
         results = analyzer._check_odds_conviction(trades)
         assert len(results) == 0
 
@@ -441,21 +441,36 @@ class TestFirstMover:
 
 
 class TestObviousBet:
-    def test_n09_obvious(self):
-        """NO buyer at 0.95 (YES odds=0.05, NO eff=0.95) → N09a (-40)."""
+    def test_n09_yes_obvious(self):
+        """YES buyer, CLOB price=0.95 → N09a (-40). High price = obvious."""
         analyzer = BehaviorAnalyzer()
-        trades = [_make_trade(price=0.05, direction="NO")]
-        # current_odds = YES price = 0.05 → NO effective = 0.95
-        results = analyzer._check_obvious_bet(trades, current_odds=0.05)
+        trades = [_make_trade(price=0.95, direction="YES")]
+        results = analyzer._check_obvious_bet(trades, current_odds=0.95)
         assert len(results) == 1
         assert results[0].filter_id == "N09a"
         assert results[0].points == config.FILTER_N09A["points"]  # -40
 
+    def test_n09_no_obvious(self):
+        """NO buyer, CLOB price=0.87 → N09b (-25). High NO price = obvious."""
+        analyzer = BehaviorAnalyzer()
+        trades = [_make_trade(price=0.87, direction="NO")]
+        results = analyzer._check_obvious_bet(trades, current_odds=0.13)
+        assert len(results) == 1
+        assert results[0].filter_id == "N09b"
+        assert results[0].points == config.FILTER_N09B["points"]  # -25
+
     def test_n09_not_obvious(self):
-        """YES buyer at 0.05 (contrarian) → no N09."""
+        """YES buyer, CLOB price=0.05 (contrarian) → no N09."""
         analyzer = BehaviorAnalyzer()
         trades = [_make_trade(price=0.05, direction="YES")]
         results = analyzer._check_obvious_bet(trades, current_odds=0.05)
+        assert len(results) == 0
+
+    def test_n09_no_contrarian(self):
+        """NO buyer, CLOB price=0.05 (contrarian) → no N09."""
+        analyzer = BehaviorAnalyzer()
+        trades = [_make_trade(price=0.05, direction="NO")]
+        results = analyzer._check_obvious_bet(trades, current_odds=0.95)
         assert len(results) == 0
 
     def test_n09_exclusion(self):
@@ -505,82 +520,95 @@ class TestLongHorizon:
         assert len(results) == 0
 
 
-# ── NO direction odds tests ──────────────────────────────
+# ── NO direction CLOB price tests ─────────────────────────
+# CLOB returns the price of the token bought (YES or NO).
+# Low price = contrarian, High price = consensus. No conversion needed.
 
 
 class TestB07NoDirection:
-    """B07 uses effective odds: YES→price as-is, NO→1-price."""
+    """B07: CLOB price < 0.20 = contrarian, regardless of direction."""
 
-    def test_b07_no_direction_high_yes_price(self):
-        """NO buyer @ YES price 0.13 → effective = 0.87 → B07 does NOT fire.
-
-        Market thinks YES is 13%, NO is 87%.  NO buyer is WITH consensus.
-        Effective odds 0.87 is way above the 0.20 threshold.
-        """
+    def test_b07_no_direction_high_price(self):
+        """NO trade, CLOB price=0.87 → B07 NOT fire (0.87 > 0.20, consensus)."""
         analyzer = BehaviorAnalyzer()
-        trades = [_make_trade(price=0.13, direction="NO")]
+        trades = [_make_trade(price=0.87, direction="NO")]
         results = analyzer._check_against_market(trades)
         assert len(results) == 0
 
-    def test_b07_no_contra_consenso(self):
-        """NO buyer @ YES price 0.92 → effective = 0.08 → B07 fires.
-
-        Market thinks YES is 92%.  NO buyer bets against strong consensus.
-        Effective odds 0.08 < 0.20 threshold → B07 fires.
-        """
+    def test_b07_no_direction_low_price(self):
+        """NO trade, CLOB price=0.08 → B07 fires (0.08 < 0.20, contrarian)."""
         analyzer = BehaviorAnalyzer()
-        trades = [_make_trade(price=0.92, direction="NO")]
+        trades = [_make_trade(price=0.08, direction="NO")]
         results = analyzer._check_against_market(trades)
         assert len(results) == 1
         assert results[0].filter_id == "B07"
-        assert "eff_odds=0.08" in results[0].details
+
+    def test_b07_yes_contrarian(self):
+        """YES trade, CLOB price=0.10 → B07 fires (regression)."""
+        analyzer = BehaviorAnalyzer()
+        trades = [_make_trade(price=0.10, direction="YES")]
+        results = analyzer._check_against_market(trades)
+        assert len(results) == 1
+        assert results[0].filter_id == "B07"
 
 
 class TestB25NoDirection:
-    """B25 uses effective odds: YES→price, NO→1-price. Low effective = contrarian."""
+    """B25: CLOB price thresholds apply identically to YES and NO."""
 
-    def test_b25_no_with_consensus(self):
-        """NO buyer @ YES price 0.13 → effective = 0.87 → B25 does NOT fire.
-
-        Market thinks YES=13%, NO=87%.  NO buyer agrees with consensus.
-        Effective 0.87 > 0.35 → no B25 (not contrarian).
-        """
+    def test_b25_no_consensus(self):
+        """NO trade, CLOB price=0.87 → B25 NOT fire (consensus)."""
         analyzer = BehaviorAnalyzer()
-        trades = [_make_trade(price=0.13, direction="NO")]
+        trades = [_make_trade(price=0.87, direction="NO")]
         results = analyzer._check_odds_conviction(trades)
         assert len(results) == 0
 
-    def test_b25_no_against_consensus(self):
-        """NO buyer @ YES price 0.95 → effective = 0.05 → B25a fires.
-
-        Market thinks YES=95%.  NO buyer bets against very strong consensus.
-        Effective 0.05 < 0.10 → B25a (extreme conviction).
-        """
+    def test_b25_no_contrarian(self):
+        """NO trade, CLOB price=0.05 → B25a fires (extreme contrarian)."""
         analyzer = BehaviorAnalyzer()
-        trades = [_make_trade(price=0.95, direction="NO")]
+        trades = [_make_trade(price=0.05, direction="NO")]
         results = analyzer._check_odds_conviction(trades)
         assert len(results) == 1
         assert results[0].filter_id == "B25a"
 
-    def test_b25_no_moderate_contrarian(self):
-        """NO buyer @ YES price 0.75 → effective = 0.25 → B25c fires.
-
-        Market thinks YES=75%.  NO buyer is moderately contrarian.
-        Effective 0.25 is between 0.20 and 0.35 → B25c.
-        """
+    def test_b25_no_moderate(self):
+        """NO trade, CLOB price=0.25 → B25c fires (moderate contrarian)."""
         analyzer = BehaviorAnalyzer()
-        trades = [_make_trade(price=0.75, direction="NO")]
+        trades = [_make_trade(price=0.25, direction="NO")]
         results = analyzer._check_odds_conviction(trades)
         assert len(results) == 1
         assert results[0].filter_id == "B25c"
 
     def test_b25_yes_still_works(self):
-        """YES buyer @ price 0.08 → effective = 0.08 → B25a fires.
-
-        Regression: YES branch must still work after refactor.
-        """
+        """YES trade, CLOB price=0.08 → B25a fires (regression)."""
         analyzer = BehaviorAnalyzer()
         trades = [_make_trade(price=0.08, direction="YES")]
         results = analyzer._check_odds_conviction(trades)
         assert len(results) == 1
         assert results[0].filter_id == "B25a"
+
+
+class TestN09NoDirection:
+    """N09: CLOB price > threshold = obvious bet, regardless of direction."""
+
+    def test_n09_no_obvious(self):
+        """NO trade, CLOB price=0.87 → N09b fires (0.87 > 0.85, obvious)."""
+        analyzer = BehaviorAnalyzer()
+        trades = [_make_trade(price=0.87, direction="NO")]
+        results = analyzer._check_obvious_bet(trades, current_odds=0.13)
+        assert len(results) == 1
+        assert results[0].filter_id == "N09b"
+
+    def test_n09_no_contrarian(self):
+        """NO trade, CLOB price=0.05 → N09 NOT fire (contrarian)."""
+        analyzer = BehaviorAnalyzer()
+        trades = [_make_trade(price=0.05, direction="NO")]
+        results = analyzer._check_obvious_bet(trades, current_odds=0.95)
+        assert len(results) == 0
+
+    def test_n09_yes_obvious(self):
+        """YES trade, CLOB price=0.95 → N09a fires (regression)."""
+        analyzer = BehaviorAnalyzer()
+        trades = [_make_trade(price=0.95, direction="YES")]
+        results = analyzer._check_obvious_bet(trades, current_odds=0.95)
+        assert len(results) == 1
+        assert results[0].filter_id == "N09a"

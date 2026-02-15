@@ -250,18 +250,16 @@ class BehaviorAnalyzer:
     # ── B07 — Buying against market ──────────────────────────
 
     def _check_against_market(self, trades: list[TradeEvent]) -> list[FilterResult]:
-        """B07 — Buying at effective odds < 0.20.
+        """B07 — Buying at CLOB price < 0.20 (contrarian bet).
 
-        t.price is always the YES token price from the Polymarket API.
-        For NO buyers, effective odds = 1.0 - t.price.
+        CLOB returns the price of the token bought:
+          YES trade → YES token price
+          NO trade  → NO token price
+        Low price = contrarian regardless of direction.
         """
         for t in trades:
-            effective = t.price if t.direction == "YES" else 1.0 - t.price
-            if effective < config.AGAINST_MARKET_ODDS:
-                return [_fr(
-                    config.FILTER_B07,
-                    f"eff_odds={effective:.2f} ({t.direction}@{t.price:.2f})",
-                )]
+            if t.price < config.AGAINST_MARKET_ODDS:
+                return [_fr(config.FILTER_B07, f"price={t.price:.2f}")]
         return []
 
     # ── B14 — First big buy ──────────────────────────────────
@@ -424,12 +422,13 @@ class BehaviorAnalyzer:
     ) -> list[FilterResult]:
         """B25a-c — Conviction scoring for bets against market consensus.
 
-        Only rewards bets where the wallet goes AGAINST the majority.
-        t.price is always the YES token price from the Polymarket API.
-        We convert to effective odds (direction-adjusted):
-          YES buyers: effective = avg_price   (low = contrarian)
-          NO buyers:  effective = 1 - avg_price (low = contrarian)
-        Then apply the same tier thresholds to both.
+        CLOB returns the price of the token bought:
+          YES trade → YES token price
+          NO trade  → NO token price
+        Low price = contrarian regardless of direction.
+          < 0.10 → B25a (extreme conviction)
+          < 0.20 → B25b (high conviction)
+          < 0.35 → B25c (moderate conviction)
         """
         if not trades:
             return []
@@ -437,20 +436,13 @@ class BehaviorAnalyzer:
         direction = trades[0].direction
         avg_price = sum(t.price for t in trades) / len(trades)
 
-        # Convert to direction-adjusted effective odds
-        # Low effective = betting against market consensus = contrarian
-        if direction == "YES":
-            effective = avg_price
-        else:
-            effective = 1.0 - avg_price
+        tag = f"{direction}@{avg_price:.2f}"
 
-        tag = f"{direction}@{avg_price:.2f}, eff={effective:.2f}"
-
-        if effective < config.CONVICTION_EXTREME_MAX:
+        if avg_price < config.CONVICTION_EXTREME_MAX:
             return [_fr(config.FILTER_B25A, tag)]
-        if effective < config.CONVICTION_HIGH_MAX:
+        if avg_price < config.CONVICTION_HIGH_MAX:
             return [_fr(config.FILTER_B25B, tag)]
-        if effective < config.CONVICTION_MODERATE_MAX:
+        if avg_price < config.CONVICTION_MODERATE_MAX:
             return [_fr(config.FILTER_B25C, tag)]
         return []
 
@@ -697,29 +689,23 @@ class BehaviorAnalyzer:
         Opposite of B25 (which rewards contrarian bets). If B25 fired,
         N09 must NOT fire — enforced by caller in analyze().
 
-        For YES buyers: current YES odds > threshold → obvious
-        For NO buyers: effective NO odds (1 - YES_odds) > threshold → obvious
-
-        Tiers:
-          N09a: odds in wallet's direction > 0.90  (-40)
-          N09b: odds in wallet's direction > 0.85  (-25)
+        CLOB returns the price of the token bought:
+          YES trade → YES token price
+          NO trade  → NO token price
+        High price = with consensus = obvious bet.
+          > 0.90 → N09a (extreme obvious, -40)
+          > 0.85 → N09b (obvious, -25)
         """
-        if not trades or current_odds is None:
+        if not trades:
             return []
 
         direction = trades[0].direction
+        avg_price = sum(t.price for t in trades) / len(trades)
 
-        # Calculate effective odds in the wallet's direction
-        if direction == "YES":
-            effective_odds = current_odds
-        else:
-            # NO buyer: their effective odds = 1 - YES_price
-            effective_odds = 1.0 - current_odds
-
-        detail = f"{direction}@eff={effective_odds:.2f}"
-        if effective_odds > config.OBVIOUS_BET_EXTREME:
+        detail = f"{direction}@{avg_price:.2f}"
+        if avg_price > config.OBVIOUS_BET_EXTREME:
             return [_fr(config.FILTER_N09A, detail)]
-        if effective_odds > config.OBVIOUS_BET_HIGH:
+        if avg_price > config.OBVIOUS_BET_HIGH:
             return [_fr(config.FILTER_N09B, detail)]
         return []
 

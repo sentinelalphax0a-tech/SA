@@ -588,7 +588,7 @@ class AlertFormatter:
             lines.append(f"     Trades: {num_trades} transaction{'s' if num_trades != 1 else ''}")
 
         # Individual trades (max 5)
-        # Note: trade prices are already direction-specific from Polymarket API
+        # CLOB prices are the token price in the bought direction, no conversion needed
         trades = w.get("trades") or []
         for i, t in enumerate(trades[:5]):
             amt = t.get("amount", 0)
@@ -600,7 +600,7 @@ class AlertFormatter:
         if len(trades) > 5:
             lines.append(f"     ... and {len(trades) - 5} more trades")
 
-        # Total + avg entry (avg_entry_price already direction-specific)
+        # Total + avg entry (CLOB price of the token bought, no conversion)
         avg_price = w.get("avg_entry_price")
         if avg_price is not None and avg_price > 0:
             lines.append(f"     Total: ${total:,.0f} | Avg entry: {avg_price:.2f}")
