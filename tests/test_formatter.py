@@ -700,3 +700,31 @@ class TestFormatTelegramDetailed:
         lines = text.split("\n")
         c04_line = [l for l in lines if "C04:" in l][0]
         assert "\u2014" not in c04_line
+
+    def test_wallet_direction_indicator_same(self):
+        """Wallet same direction as alert shows [YES] indicator."""
+        fmt = AlertFormatter()
+        wallet = _wallet_with_trades(direction="YES")
+        alert = _alert(direction="YES", wallets=[wallet])
+        text = fmt.format_telegram_detailed(alert)
+        assert "[YES]" in text
+        assert "direcci\u00f3n opuesta" not in text
+
+    def test_wallet_direction_indicator_opposite(self):
+        """Wallet opposite to alert direction shows warning + arrow."""
+        fmt = AlertFormatter()
+        wallet = _wallet_with_trades(direction="YES")
+        alert = _alert(direction="NO", wallets=[wallet])
+        text = fmt.format_telegram_detailed(alert)
+        assert "[YES \u2195]" in text
+        assert "direcci\u00f3n opuesta" in text
+        assert "\u26a0\ufe0f" in text
+
+    def test_wallet_direction_indicator_no(self):
+        """NO wallet with NO alert shows [NO] without warning."""
+        fmt = AlertFormatter()
+        wallet = _wallet_with_trades(direction="NO")
+        alert = _alert(direction="NO", wallets=[wallet])
+        text = fmt.format_telegram_detailed(alert)
+        assert "[NO]" in text
+        assert "direcci\u00f3n opuesta" not in text

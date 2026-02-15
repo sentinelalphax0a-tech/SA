@@ -1,4 +1,4 @@
-"""Tests for the confluence detector (C filters)."""
+"""Tests for the confluence detector (C filters — layered architecture)."""
 
 from datetime import datetime, timedelta, timezone
 
@@ -9,6 +9,9 @@ from src.analysis.confluence_detector import ConfluenceDetector, _amounts_simila
 
 SENDER_A = "0xaaaa000000000000000000000000000000000001"
 SENDER_B = "0xbbbb000000000000000000000000000000000002"
+SENDER_EXCHANGE = "0xeeee000000000000000000000000000000000003"
+SENDER_BRIDGE = "0xdddd000000000000000000000000000000000004"
+SENDER_MIXER = "0xcccc000000000000000000000000000000000005"
 
 
 class FakeDB:
@@ -31,6 +34,10 @@ def _funding_row(
     amount: float = 1000.0,
     is_exchange: bool = False,
     exchange_name: str | None = None,
+    is_bridge: bool = False,
+    bridge_name: str | None = None,
+    is_mixer: bool = False,
+    mixer_name: str | None = None,
     hours_ago: int = 12,
     hop_level: int = 1,
 ) -> dict:
@@ -41,6 +48,10 @@ def _funding_row(
         "amount": amount,
         "is_exchange": is_exchange,
         "exchange_name": exchange_name,
+        "is_bridge": is_bridge,
+        "bridge_name": bridge_name,
+        "is_mixer": is_mixer,
+        "mixer_name": mixer_name,
         "timestamp": ts,
         "hop_level": hop_level,
     }
@@ -61,7 +72,7 @@ class TestConfluenceDetector:
         assert results == []
 
 
-# ── C01 / C02 — Direction confluence ────────────────────────
+# ── Layer 1: C01 / C02 — Direction confluence ────────────────
 
 
 class TestDirectionConfluence:
@@ -104,44 +115,118 @@ class TestDirectionConfluence:
         results = detector._check_direction_confluence("YES", wallets)
         assert len(results) == 0  # only 2 YES
 
+    def test_opposite_direction_not_counted(self):
+        """3 wallets NO + 1 wallet YES → C01 counts 3 (NO group), not 4."""
+        detector = ConfluenceDetector(FakeDB())
+        wallets = [
+            _wallet("0x01", "NO"),
+            _wallet("0x02", "NO"),
+            _wallet("0x03", "NO"),
+            _wallet("0x04", "YES"),  # opposite — must NOT be counted
+        ]
+        results = detector._check_direction_confluence("NO", wallets)
+        assert len(results) == 1
+        assert results[0].filter_id == "C01"
+        assert "3 wallets" in results[0].details
 
-# ── C03 / C04 — Shared funding source ───────────────────────
+
+# ── Layer 1 tests (user-requested) ───────────────────────────
 
 
-class TestFundingConfluence:
-    def test_c04_same_sender_same_direction(self):
-        """2 wallets share sender AND bet same direction → C04."""
+class TestCapa1:
+    def test_capa1_solo_direccion(self):
+        """3 wallets same direction, no funding → only C01 (+10)."""
+        wallets = [
+            _wallet("0x01", "YES"),
+            _wallet("0x02", "YES"),
+            _wallet("0x03", "YES"),
+        ]
+        detector = ConfluenceDetector(FakeDB())
+        results = detector.detect("mkt1", "YES", wallets)
+        ids = {r.filter_id for r in results}
+        assert ids == {"C01"}
+        assert results[0].points == 10
+
+    def test_capa1_fuerte(self):
+        """5 wallets same direction → C02 (+15) instead of C01."""
+        wallets = [_wallet(f"0x{i:040x}", "YES") for i in range(5)]
+        detector = ConfluenceDetector(FakeDB())
+        results = detector.detect("mkt1", "YES", wallets)
+        ids = {r.filter_id for r in results}
+        assert "C02" in ids
+        assert "C01" not in ids
+        c02 = [r for r in results if r.filter_id == "C02"][0]
+        assert c02.points == 15
+
+
+# ── Layer 2: C03a-d — Origin type ────────────────────────────
+
+
+class TestCapa2Exchange:
+    def test_capa2_exchange(self):
+        """2 wallets funded from same exchange → C03a (+5)."""
+        funding = {
+            "0x01": [_funding_row(SENDER_EXCHANGE, is_exchange=True, exchange_name="Coinbase")],
+            "0x02": [_funding_row(SENDER_EXCHANGE, is_exchange=True, exchange_name="Coinbase")],
+        }
+        wallets = [_wallet("0x01", "YES"), _wallet("0x02", "YES")]
+        detector = ConfluenceDetector(FakeDB(funding))
+        sender_idx = detector._build_sender_index(funding)
+        results = detector._check_origin_layers(wallets, sender_idx, funding)
+        assert len(results) == 1
+        assert results[0].filter_id == "C03a"
+        assert results[0].points == 5
+        assert "Coinbase" in results[0].details
+
+
+class TestCapa2Bridge:
+    def test_capa2_bridge(self):
+        """2 wallets funded from same bridge → C03b (+20)."""
+        funding = {
+            "0x01": [_funding_row(SENDER_BRIDGE, is_bridge=True, bridge_name="Hop Protocol")],
+            "0x02": [_funding_row(SENDER_BRIDGE, is_bridge=True, bridge_name="Hop Protocol")],
+        }
+        wallets = [_wallet("0x01", "YES"), _wallet("0x02", "YES")]
+        detector = ConfluenceDetector(FakeDB(funding))
+        sender_idx = detector._build_sender_index(funding)
+        results = detector._check_origin_layers(wallets, sender_idx, funding)
+        assert len(results) == 1
+        assert results[0].filter_id == "C03b"
+        assert results[0].points == 20
+        assert "Hop Protocol" in results[0].details
+
+
+class TestCapa2Mixer:
+    def test_capa2_mixer(self):
+        """2 wallets funded from same mixer → C03c (+30)."""
+        funding = {
+            "0x01": [_funding_row(SENDER_MIXER, is_mixer=True, mixer_name="Tornado Cash")],
+            "0x02": [_funding_row(SENDER_MIXER, is_mixer=True, mixer_name="Tornado Cash")],
+        }
+        wallets = [_wallet("0x01", "YES"), _wallet("0x02", "YES")]
+        detector = ConfluenceDetector(FakeDB(funding))
+        sender_idx = detector._build_sender_index(funding)
+        results = detector._check_origin_layers(wallets, sender_idx, funding)
+        assert len(results) == 1
+        assert results[0].filter_id == "C03c"
+        assert results[0].points == 30
+        assert "Tornado Cash" in results[0].details
+
+
+class TestCapa2Padre:
+    def test_capa2_padre(self):
+        """2 wallets funded from same unknown sender → C03d (+30)."""
         funding = {
             "0x01": [_funding_row(SENDER_A)],
             "0x02": [_funding_row(SENDER_A)],
         }
         wallets = [_wallet("0x01", "YES"), _wallet("0x02", "YES")]
         detector = ConfluenceDetector(FakeDB(funding))
-
-        results = detector._check_funding_confluence(
-            "YES", wallets,
-            detector._build_sender_index(funding),
-            funding,
-        )
+        sender_idx = detector._build_sender_index(funding)
+        results = detector._check_origin_layers(wallets, sender_idx, funding)
         assert len(results) == 1
-        assert results[0].filter_id == "C04"
-
-    def test_c03_same_sender_different_direction(self):
-        """2 wallets share sender but bet different directions → C03."""
-        funding = {
-            "0x01": [_funding_row(SENDER_A)],
-            "0x02": [_funding_row(SENDER_A)],
-        }
-        wallets = [_wallet("0x01", "YES"), _wallet("0x02", "NO")]
-        detector = ConfluenceDetector(FakeDB(funding))
-
-        results = detector._check_funding_confluence(
-            "YES", wallets,
-            detector._build_sender_index(funding),
-            funding,
-        )
-        assert len(results) == 1
-        assert results[0].filter_id == "C03"
+        assert results[0].filter_id == "C03d"
+        assert results[0].points == 30
 
     def test_no_trigger_no_shared_sender(self):
         """Each wallet has a different sender → no trigger."""
@@ -151,16 +236,51 @@ class TestFundingConfluence:
         }
         wallets = [_wallet("0x01", "YES"), _wallet("0x02", "YES")]
         detector = ConfluenceDetector(FakeDB(funding))
-
-        results = detector._check_funding_confluence(
-            "YES", wallets,
-            detector._build_sender_index(funding),
-            funding,
-        )
+        sender_idx = detector._build_sender_index(funding)
+        results = detector._check_origin_layers(wallets, sender_idx, funding)
         assert len(results) == 0
 
 
-# ── C05 — Temporal funding ──────────────────────────────────
+class TestCapa2MultipleTypes:
+    def test_exchange_and_padre_both_fire(self):
+        """Exchange sender + padre sender → C03a + C03d (additive)."""
+        funding = {
+            "0x01": [_funding_row(SENDER_EXCHANGE, is_exchange=True, exchange_name="Binance")],
+            "0x02": [_funding_row(SENDER_EXCHANGE, is_exchange=True, exchange_name="Binance")],
+            "0x03": [_funding_row(SENDER_A)],
+            "0x04": [_funding_row(SENDER_A)],
+        }
+        wallets = [
+            _wallet("0x01", "YES"),
+            _wallet("0x02", "YES"),
+            _wallet("0x03", "YES"),
+            _wallet("0x04", "YES"),
+        ]
+        detector = ConfluenceDetector(FakeDB(funding))
+        sender_idx = detector._build_sender_index(funding)
+        results = detector._check_origin_layers(wallets, sender_idx, funding)
+        ids = {r.filter_id for r in results}
+        assert "C03a" in ids
+        assert "C03d" in ids
+        assert len(results) == 2
+
+    def test_mixer_priority_over_exchange(self):
+        """Mixer classification takes priority: is_mixer=True + is_exchange=True → mixer."""
+        funding = {
+            "0x01": [_funding_row(SENDER_MIXER, is_mixer=True, mixer_name="Tornado Cash",
+                                  is_exchange=True, exchange_name="Coinbase")],
+            "0x02": [_funding_row(SENDER_MIXER, is_mixer=True, mixer_name="Tornado Cash",
+                                  is_exchange=True, exchange_name="Coinbase")],
+        }
+        wallets = [_wallet("0x01", "YES"), _wallet("0x02", "YES")]
+        detector = ConfluenceDetector(FakeDB(funding))
+        sender_idx = detector._build_sender_index(funding)
+        results = detector._check_origin_layers(wallets, sender_idx, funding)
+        assert len(results) == 1
+        assert results[0].filter_id == "C03c"  # mixer, not exchange
+
+
+# ── Layer 3: C05 — Temporal funding ──────────────────────────
 
 
 class TestTemporalFunding:
@@ -230,7 +350,7 @@ class TestTemporalFunding:
         assert len(results) == 0
 
 
-# ── C06 — Similar funding amounts ───────────────────────────
+# ── Layer 3: C06 — Similar funding amounts ───────────────────
 
 
 class TestSimilarAmounts:
@@ -264,7 +384,7 @@ class TestSimilarAmounts:
         assert _amounts_similar([], 0.30) is False
 
 
-# ── C07 — Distribution network ──────────────────────────────
+# ── Layer 4: C07 — Distribution network ──────────────────────
 
 
 class TestDistributionNetwork:
@@ -285,7 +405,7 @@ class TestDistributionNetwork:
         results = detector._check_distribution_network(wallets, sender_idx)
         assert len(results) == 1
         assert results[0].filter_id == "C07"
-        assert results[0].points == 60
+        assert results[0].points == 30
 
     def test_no_trigger_only_two_from_same_sender(self):
         """Only 2 wallets from same sender → below threshold."""
@@ -314,12 +434,12 @@ class TestDistributionNetwork:
         assert len(results) == 0  # only 2 active, need 3
 
 
-# ── Full detect flow ────────────────────────────────────────
+# ── Full detect flow — integration tests ────────────────────
 
 
-class TestDetectIntegration:
-    def test_full_detect_c01_and_c04_and_c06(self):
-        """3 wallets, same direction, shared sender, similar amounts."""
+class TestCapasCompletas:
+    def test_capas_completas(self):
+        """3 wallets, same direction, shared padre, similar amounts → all layers fire."""
         funding = {
             "0x01": [_funding_row(SENDER_A, amount=1000)],
             "0x02": [_funding_row(SENDER_A, amount=1050)],
@@ -334,11 +454,27 @@ class TestDetectIntegration:
         results = detector.detect("mkt1", "YES", wallets)
         ids = {r.filter_id for r in results}
 
-        assert "C01" in ids       # 3 wallets same direction
-        assert "C04" in ids       # shared sender + same direction
-        assert "C06" in ids       # similar amounts
-        assert "C07" in ids       # 1 sender → 3 active wallets
-        assert "C03" not in ids   # replaced by C04
+        # Layer 1: direction
+        assert "C01" in ids
+
+        # Layer 2: padre directo (SENDER_A is not exchange/bridge/mixer)
+        assert "C03d" in ids
+        # Old C03/C04 should NOT appear
+        assert "C03" not in ids
+        assert "C04" not in ids
+
+        # Layer 3: similar amounts
+        assert "C06" in ids
+
+        # Layer 4: distribution (3 wallets from 1 sender)
+        assert "C07" in ids
+
+        # Verify new point values
+        points = {r.filter_id: r.points for r in results}
+        assert points["C01"] == 10
+        assert points["C03d"] == 30
+        assert points["C06"] == 10
+        assert points["C07"] == 30
 
     def test_full_detect_no_funding_data(self):
         """3 wallets same direction but no funding data → only C01."""
@@ -360,6 +496,78 @@ class TestDetectIntegration:
         ids = {r.filter_id for r in results}
         assert "C02" in ids
         assert "C01" not in ids
+
+    def test_exchange_and_padre_layers_additive(self):
+        """Exchange sender + padre sender in same market → C03a + C03d both fire."""
+        funding = {
+            "0x01": [_funding_row(SENDER_EXCHANGE, is_exchange=True, exchange_name="Coinbase")],
+            "0x02": [_funding_row(SENDER_EXCHANGE, is_exchange=True, exchange_name="Coinbase")],
+            "0x03": [_funding_row(SENDER_A)],
+            "0x04": [_funding_row(SENDER_A)],
+            "0x05": [_funding_row(SENDER_A)],
+        }
+        wallets = [
+            _wallet("0x01", "YES"),
+            _wallet("0x02", "YES"),
+            _wallet("0x03", "YES"),
+            _wallet("0x04", "YES"),
+            _wallet("0x05", "YES"),
+        ]
+        detector = ConfluenceDetector(FakeDB(funding))
+        results = detector.detect("mkt1", "YES", wallets)
+        ids = {r.filter_id for r in results}
+
+        assert "C02" in ids    # 5 wallets
+        assert "C03a" in ids   # exchange origin
+        assert "C03d" in ids   # padre directo
+        assert "C07" in ids    # 3+ wallets from SENDER_A
+
+
+class TestNoduplicarCoord04:
+    def test_coord04_and_c03c_can_coexist(self):
+        """COORD04 (per-wallet mixer detection) and C03c (confluence mixer)
+        are different concepts and can BOTH fire on the same alert.
+        COORD04 fires in wallet_analyzer, C03c fires in confluence_detector.
+        They should NOT suppress each other.
+        """
+        # C03c fires when 2+ wallets share a mixer sender
+        funding = {
+            "0x01": [_funding_row(SENDER_MIXER, is_mixer=True, mixer_name="Tornado Cash")],
+            "0x02": [_funding_row(SENDER_MIXER, is_mixer=True, mixer_name="Tornado Cash")],
+            "0x03": [_funding_row(SENDER_MIXER, is_mixer=True, mixer_name="Tornado Cash")],
+        }
+        wallets = [
+            _wallet("0x01", "YES"),
+            _wallet("0x02", "YES"),
+            _wallet("0x03", "YES"),
+        ]
+        detector = ConfluenceDetector(FakeDB(funding))
+        results = detector.detect("mkt1", "YES", wallets)
+        ids = {r.filter_id for r in results}
+
+        assert "C03c" in ids   # confluence mixer detection
+        assert "C01" in ids    # 3 wallets same direction
+        # COORD04 would fire separately in wallet_analyzer — not tested here
+        # but importantly, C03c does NOT check or suppress COORD04
+
+
+# ── Sender exclusion ────────────────────────────────────────
+
+
+class TestSenderExclusion:
+    def test_polymarket_contracts_excluded(self):
+        """Polymarket contracts should be excluded from sender analysis."""
+        excluded = ConfluenceDetector._build_default_excluded()
+        from src.scanner.blockchain_client import POLYMARKET_CONTRACTS
+        for contract in POLYMARKET_CONTRACTS:
+            assert contract.lower() in excluded
+
+    def test_exchanges_not_excluded(self):
+        """Exchanges should NOT be excluded — their shared use is the C03a signal."""
+        excluded = ConfluenceDetector._build_default_excluded()
+        from src import config
+        for exchange_addr in config.KNOWN_EXCHANGES:
+            assert exchange_addr.lower() not in excluded
 
 
 # ── detect_funding_links ─────────────────────────────────────

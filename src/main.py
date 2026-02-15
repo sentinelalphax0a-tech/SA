@@ -718,6 +718,28 @@ def _process_market(
             {"address": w["address"], "direction": w.get("direction", direction)}
             for w in analyzed_wallets
         ]
+
+        # FIX: Ensure funding is fetched for all wallets when 3+ share a
+        # direction.  wallet_analyzer only fetches funding when basic_score
+        # meets a threshold, leaving most wallets without funding data.
+        # Confluence filters C03-C07 need that data to work.
+        same_dir_count = sum(
+            1 for w in wallets_for_confluence if w["direction"] == direction
+        )
+        if same_dir_count >= config.CONFLUENCE_BASIC_MIN_WALLETS and chain_client is not None:
+            for w in wallets_for_confluence:
+                addr = w["address"]
+                existing = db.get_funding_sources(addr)
+                if not existing:
+                    try:
+                        funding = chain_client.get_funding_sources(
+                            addr, max_hops=config.MAX_FUNDING_HOPS
+                        )
+                        if funding:
+                            db.insert_funding_batch(funding)
+                    except Exception as e:
+                        logger.debug("Confluence funding fetch for %s: %s", addr[:10], e)
+
         confluence_filters = confluence_detector.detect(
             market_id=market.market_id,
             direction=direction,
@@ -787,7 +809,7 @@ def _process_market(
         if f.filter_id == "C07":
             confluence_type = "distribution_network"
             break
-        elif f.filter_id in ("C04", "C03"):
+        elif f.filter_id in ("C03a", "C03b", "C03c", "C03d"):
             confluence_type = "shared_funding"
         elif f.filter_id == "C05" and not confluence_type:
             confluence_type = "exchange_funded"

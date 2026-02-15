@@ -1,14 +1,23 @@
 """
-Confluence Detector — C filters.
+Confluence Detector — C filters (layered architecture).
 
-Detects coordination patterns across multiple wallets:
-  C01: Basic confluence (3+ wallets, same direction, 48h)
-  C02: Strong confluence (5+ wallets)  — mutually exclusive with C01
-  C03: Same funding intermediary (2+ wallets share sender)
-  C04: C03 + same direction            — mutually exclusive with C03
-  C05: Temporal funding (3+ funded from exchange < 4h + same direction)
-  C06: Similar funding amounts (±30%)  — bonus, stacks
-  C07: Distribution network (1 sender → 3+ wallets active in PM)
+4 additive layers:
+  Layer 1 — Direction:
+    C01: Basic confluence (3+ wallets same direction)  (+10)
+    C02: Strong confluence (5+ wallets)                (+15)  — mutually exclusive with C01
+
+  Layer 2 — Origin type (each fires independently, additive):
+    C03a: Shared exchange origin   (2+ wallets from same exchange)  (+5)
+    C03b: Shared bridge origin     (2+ wallets from same bridge)    (+20)
+    C03c: Shared mixer origin      (2+ wallets from same mixer)     (+30)
+    C03d: Same direct parent       (2+ wallets from same non-exchange/bridge/mixer sender)  (+30)
+
+  Layer 3 — Bonus (additive, stacks):
+    C05: Temporal funding (3+ funded from exchange < 4h, same dir)  (+10)
+    C06: Similar funding amounts (±30%)                            (+10)
+
+  Layer 4 — Distribution network:
+    C07: 1 sender → 3+ wallets active in market  (+30)
 """
 
 import logging
@@ -62,12 +71,11 @@ class ConfluenceDetector:
     def _build_default_excluded() -> set[str]:
         """Addresses that should ALWAYS be excluded from sender analysis.
 
-        Includes Polymarket contracts and known exchanges — these are not
-        insider intermediaries.
+        Only Polymarket contracts are excluded — exchanges, bridges, and
+        mixers are intentionally kept because their shared use IS the
+        confluence signal detected by Layer 2 (C03a-c).
         """
-        excluded = {a.lower() for a in POLYMARKET_CONTRACTS}
-        excluded.update(a.lower() for a in config.KNOWN_EXCHANGES)
-        return excluded
+        return {a.lower() for a in POLYMARKET_CONTRACTS}
 
     # ── Main entry point ─────────────────────────────────────
 
@@ -80,12 +88,14 @@ class ConfluenceDetector:
     ) -> list[FilterResult]:
         """Run all C filters for wallets active in a market.
 
+        Layers are additive — each layer fires independently.
+
         Args:
             market_id: The market being evaluated.
             direction: Consensus direction to check ("YES" or "NO").
             wallets_with_scores: List of wallet dicts active in this market.
-            excluded_senders: Senders to exclude from C03/C04/C06/C07
-                (super-senders detected across markets).
+            excluded_senders: Senders to exclude (super-senders detected
+                across markets).
 
         Returns:
             List of triggered FilterResult objects.
@@ -96,7 +106,7 @@ class ConfluenceDetector:
 
         results: list[FilterResult] = []
 
-        # C01 / C02 — direction confluence (mutually exclusive)
+        # ── Layer 1: Direction confluence (C01/C02, mutually exclusive) ──
         results.extend(self._check_direction_confluence(direction, wallets_with_scores))
 
         # Fetch funding data from DB for all wallets
@@ -108,7 +118,7 @@ class ConfluenceDetector:
         # Expose raw senders for cross-market tracking
         self.last_senders_seen = set(raw_sender_to_wallets.keys())
 
-        # Filter out Polymarket contracts, known exchanges, and super-senders
+        # Filter out only Polymarket contracts and super-senders
         all_excluded = self._build_default_excluded()
         if excluded_senders:
             all_excluded.update(excluded_senders)
@@ -122,20 +132,18 @@ class ConfluenceDetector:
             removed = len(raw_sender_to_wallets) - len(sender_to_wallets)
             logger.debug("Excluded %d senders from confluence analysis", removed)
 
-        # C03 / C04 — shared funding source (mutually exclusive)
+        # ── Layer 2: Origin type (C03a-d, additive) ─────────────
         results.extend(
-            self._check_funding_confluence(direction, wallets_with_scores, sender_to_wallets, funding_map)
+            self._check_origin_layers(wallets_with_scores, sender_to_wallets, funding_map)
         )
 
-        # C05 — temporal funding (exchange, < 4h, same direction)
+        # ── Layer 3: Bonus (C05/C06, additive) ──────────────────
         results.extend(
             self._check_temporal_funding(direction, wallets_with_scores, funding_map)
         )
-
-        # C06 — similar funding amounts (bonus, stacks)
         results.extend(self._check_similar_amounts(sender_to_wallets, funding_map))
 
-        # C07 — distribution network (1 → 3+)
+        # ── Layer 4: Distribution network (C07) ─────────────────
         results.extend(self._check_distribution_network(wallets_with_scores, sender_to_wallets))
 
         return results
@@ -224,7 +232,7 @@ class ConfluenceDetector:
                     sender_to_wallets[sender].add(wallet_addr)
         return dict(sender_to_wallets)
 
-    # ── C01 / C02 — Direction confluence ─────────────────────
+    # ── Layer 1: C01 / C02 — Direction confluence ─────────────
 
     def _check_direction_confluence(
         self, direction: str, wallets: list[dict]
@@ -239,46 +247,101 @@ class ConfluenceDetector:
             return [_fr(config.FILTER_C01, f"{count} wallets → {direction}")]
         return []
 
-    # ── C03 / C04 — Shared funding source ────────────────────
+    # ── Layer 2: C03a-d — Origin type (additive) ──────────────
 
-    def _check_funding_confluence(
+    def _check_origin_layers(
         self,
-        direction: str,
         wallets: list[dict],
         sender_to_wallets: dict[str, set[str]],
         funding_map: dict[str, list[dict]],
     ) -> list[FilterResult]:
-        """C03/C04 — 2+ wallets share a funding sender (mutually exclusive).
+        """C03a-d — Classify shared senders by type.
 
-        C04 upgrades C03 when all shared-sender wallets bet in the same direction.
+        Each origin type fires independently (additive, not mutually exclusive):
+          C03a: shared exchange   (+5)
+          C03b: shared bridge     (+20)
+          C03c: shared mixer      (+30)
+          C03d: same direct parent — non-exchange/bridge/mixer  (+30)
         """
-        wallet_dir = {w["address"]: w.get("direction") for w in wallets}
+        results: list[FilterResult] = []
+        fired_types: set[str] = set()  # track which types already fired
 
         for sender, funded_addrs in sender_to_wallets.items():
             if len(funded_addrs) < config.FUNDING_CONFLUENCE_MIN_WALLETS:
                 continue
 
-            # Check if all funded wallets bet the same direction
-            all_same_dir = all(
-                wallet_dir.get(a) == direction
-                for a in funded_addrs
-                if a in wallet_dir
-            )
+            # Classify this sender
+            sender_type = self._classify_sender(sender, funding_map)
 
-            if all_same_dir:
-                return [_fr(
-                    config.FILTER_C04,
-                    f"sender={sender[:10]}…, {len(funded_addrs)} wallets, dir={direction}",
-                )]
+            # Only fire each type once (strongest example wins)
+            if sender_type in fired_types:
+                continue
+
+            detail = f"sender={sender[:10]}…, {len(funded_addrs)} wallets"
+
+            if sender_type == "exchange":
+                exchange_name = self._get_sender_label(sender, funding_map, "exchange_name")
+                results.append(_fr(
+                    config.FILTER_C03A,
+                    f"{detail}, exchange={exchange_name}",
+                ))
+                fired_types.add("exchange")
+
+            elif sender_type == "bridge":
+                bridge_name = self._get_sender_label(sender, funding_map, "bridge_name")
+                results.append(_fr(
+                    config.FILTER_C03B,
+                    f"{detail}, bridge={bridge_name}",
+                ))
+                fired_types.add("bridge")
+
+            elif sender_type == "mixer":
+                mixer_name = self._get_sender_label(sender, funding_map, "mixer_name")
+                results.append(_fr(
+                    config.FILTER_C03C,
+                    f"{detail}, mixer={mixer_name}",
+                ))
+                fired_types.add("mixer")
+
             else:
-                return [_fr(
-                    config.FILTER_C03,
-                    f"sender={sender[:10]}…, {len(funded_addrs)} wallets",
-                )]
+                # Direct parent (padre directo) — unknown intermediary
+                results.append(_fr(config.FILTER_C03D, detail))
+                fired_types.add("padre")
 
-        return []
+        return results
 
-    # ── C05 — Temporal funding ───────────────────────────────
+    def _classify_sender(
+        self, sender: str, funding_map: dict[str, list[dict]]
+    ) -> str:
+        """Classify a sender address by its type using funding row metadata."""
+        for fundings in funding_map.values():
+            for f in fundings:
+                if f.get("sender_address") != sender:
+                    continue
+                if f.get("is_mixer"):
+                    return "mixer"
+                if f.get("is_bridge"):
+                    return "bridge"
+                if f.get("is_exchange"):
+                    return "exchange"
+        return "padre"
+
+    @staticmethod
+    def _get_sender_label(
+        sender: str,
+        funding_map: dict[str, list[dict]],
+        label_key: str,
+    ) -> str:
+        """Extract a human-readable label for a sender from funding data."""
+        for fundings in funding_map.values():
+            for f in fundings:
+                if f.get("sender_address") == sender:
+                    label = f.get(label_key)
+                    if label:
+                        return label
+        return sender[:10] + "…"
+
+    # ── Layer 3: C05 — Temporal funding ───────────────────────
 
     def _check_temporal_funding(
         self,
@@ -324,17 +387,14 @@ class ConfluenceDetector:
 
         return []
 
-    # ── C06 — Similar funding amounts (bonus) ────────────────
+    # ── Layer 3: C06 — Similar funding amounts (bonus) ────────
 
     def _check_similar_amounts(
         self,
         sender_to_wallets: dict[str, set[str]],
         funding_map: dict[str, list[dict]],
     ) -> list[FilterResult]:
-        """C06 — Wallets sharing a sender were funded with amounts ±30%.
-
-        This is a bonus filter that stacks on top of C03/C04/C07.
-        """
+        """C06 — Wallets sharing a sender were funded with amounts ±30%."""
         for sender, funded_addrs in sender_to_wallets.items():
             if len(funded_addrs) < config.FUNDING_CONFLUENCE_MIN_WALLETS:
                 continue
@@ -358,7 +418,7 @@ class ConfluenceDetector:
 
         return []
 
-    # ── C07 — Distribution network ───────────────────────────
+    # ── Layer 4: C07 — Distribution network ───────────────────
 
     def _check_distribution_network(
         self,

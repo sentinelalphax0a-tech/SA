@@ -110,11 +110,19 @@ class BehaviorAnalyzer:
         results.extend(self._check_market_orders(relevant))
         results.extend(self._check_increasing_size(relevant))
         results.extend(self._check_against_market(relevant))
-        results.extend(self._check_first_big_buy(relevant))
         results.extend(self._check_rapid_accumulation(relevant))
         results.extend(self._check_low_hours(relevant))
+
+        # Ordered: B18 → B19 → B14 (B14 suppressed if B19 fired)
         results.extend(self._check_accumulation_tiers(accum, odds_move))
-        results.extend(self._check_whale_entry(relevant))
+
+        b19_results = self._check_whale_entry(relevant)
+        results.extend(b19_results)
+
+        results.extend(self._check_first_big_buy(
+            relevant, b19_fired=len(b19_results) > 0,
+        ))
+
         results.extend(self._check_position_sizing(accum, wallet_balance))
         if wallet is not None:
             results.extend(self._check_old_wallet_new_pm(wallet))
@@ -221,8 +229,15 @@ class BehaviorAnalyzer:
 
     # ── B14 — First big buy ──────────────────────────────────
 
-    def _check_first_big_buy(self, trades: list[TradeEvent]) -> list[FilterResult]:
-        """B14 — First buy in PM > $5,000."""
+    def _check_first_big_buy(
+        self, trades: list[TradeEvent], b19_fired: bool = False,
+    ) -> list[FilterResult]:
+        """B14 — First buy in PM > $5,000.
+
+        RULE 3: Suppressed if B19 already fired (redundant signal).
+        """
+        if b19_fired:
+            return []
         if not trades:
             return []
         first = min(trades, key=lambda t: t.timestamp)
@@ -270,28 +285,50 @@ class BehaviorAnalyzer:
     def _check_accumulation_tiers(
         self, accum: AccumulationWindow, odds_move: float | None
     ) -> list[FilterResult]:
-        """B18a-d (mutually exclusive) + B18e bonus.
+        """B18a-d (mutually exclusive, require ≥2 trades) + B18e bonus.
 
-        Tiers:
-          B18d: $10,000+ in 14 days
-          B18c: $5,000-$9,999 in 14 days
-          B18b: $3,500-$4,999 in 7 days
-          B18a: $2,000-$3,499 in 7 days
+        Tiers (≥2 trades required — single buys are not accumulation):
+          B18d: $10,000+
+          B18c: $5,000-$9,999
+          B18b: $3,500-$4,999
+          B18a: $2,000-$3,499
 
+        Trade count bonus: 3-4 trades → +5, 5+ trades → +10.
         B18e bonus: accumulation > $2k with < 5% price move.
         """
         results: list[FilterResult] = []
         amount = accum.total_amount
 
+        # RULE 1: accumulation requires ≥2 trades
+        if accum.trade_count < 2:
+            return results
+
+        # RULE 2: trade count bonus
+        if accum.trade_count >= 5:
+            trade_bonus = 10
+        elif accum.trade_count >= 3:
+            trade_bonus = 5
+        else:
+            trade_bonus = 0
+
         # Mutually exclusive tiers — pick the highest applicable
+        detail = f"accum=${amount:,.0f}, trades={accum.trade_count}"
         if amount >= config.ACCUM_VERY_STRONG_MIN:
-            results.append(_fr(config.FILTER_B18D, f"accum=${amount:,.0f}"))
+            fr = _fr(config.FILTER_B18D, detail)
+            fr.points += trade_bonus
+            results.append(fr)
         elif amount >= config.ACCUM_STRONG_MIN:
-            results.append(_fr(config.FILTER_B18C, f"accum=${amount:,.0f}"))
+            fr = _fr(config.FILTER_B18C, detail)
+            fr.points += trade_bonus
+            results.append(fr)
         elif amount >= config.ACCUM_SIGNIFICANT_MIN:
-            results.append(_fr(config.FILTER_B18B, f"accum=${amount:,.0f}"))
+            fr = _fr(config.FILTER_B18B, detail)
+            fr.points += trade_bonus
+            results.append(fr)
         elif amount >= config.ACCUM_MODERATE_MIN:
-            results.append(_fr(config.FILTER_B18A, f"accum=${amount:,.0f}"))
+            fr = _fr(config.FILTER_B18A, detail)
+            fr.points += trade_bonus
+            results.append(fr)
 
         # B18e bonus: accumulation > $2k with < 5% price move
         if (

@@ -473,7 +473,15 @@ class AlertFormatter:
             amt = w.get("total_amount", 0)
             odds = w.get("avg_entry_price")
             odds_str = f" @ {odds:.2f}" if odds is not None else ""
-            lines.append(f"  \U0001f4bc {short} \u2014 ${amt:,.0f}{odds_str}")
+            w_dir = (w.get("direction") or direction).upper()
+            is_opp = w_dir != direction.upper()
+            if is_opp:
+                lines.append(
+                    f"  \u26a0\ufe0f {short} [{w_dir} \u2195] \u2014 ${amt:,.0f}{odds_str} "
+                    f"(direcci\u00f3n opuesta)"
+                )
+            else:
+                lines.append(f"  \U0001f4bc {short} [{w_dir}] \u2014 ${amt:,.0f}{odds_str}")
         lines.append("")
 
         lines.append("\U0001f4c8 Signal strength: Increasing \u2191")
@@ -560,7 +568,18 @@ class AlertFormatter:
         num_trades = w.get("trade_count", 0)
         span = w.get("time_span_hours", 0)
 
-        lines.append(f"  \U0001f4bc {short_addr}")
+        # Direction indicator: mark opposite-direction wallets
+        alert_dir = (alert.direction or "YES").upper()
+        wallet_dir = direction.upper()
+        is_opposite = wallet_dir != alert_dir
+
+        if is_opposite:
+            lines.append(
+                f"  \u26a0\ufe0f {short_addr} [{wallet_dir} \u2195] \u2014 "
+                f"${total:,.0f} (direcci\u00f3n opuesta)"
+            )
+        else:
+            lines.append(f"  \U0001f4bc {short_addr} [{wallet_dir}] \u2014 ${total:,.0f}")
 
         # Trade summary
         if span > 0:

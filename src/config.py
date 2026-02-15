@@ -143,14 +143,20 @@ FILTER_B20 = {"id": "B20", "name": "Vieja nueva en PM", "points": 20, "category"
 FILTER_B23A = {"id": "B23a", "name": "Posición significativa", "points": 15, "category": "behavior"}
 FILTER_B23B = {"id": "B23b", "name": "Posición dominante", "points": 30, "category": "behavior"}
 
-# --- Confluence filters (C) — 7 filters ---
-FILTER_C01 = {"id": "C01", "name": "Confluencia básica", "points": 25, "category": "confluence"}
-FILTER_C02 = {"id": "C02", "name": "Confluencia fuerte", "points": 40, "category": "confluence"}
-FILTER_C03 = {"id": "C03", "name": "Mismo intermediario", "points": 35, "category": "confluence"}
-FILTER_C04 = {"id": "C04", "name": "Mismo intermediario + misma dir", "points": 50, "category": "confluence"}
-FILTER_C05 = {"id": "C05", "name": "Fondeo temporal", "points": 30, "category": "confluence"}
-FILTER_C06 = {"id": "C06", "name": "Monto similar", "points": 15, "category": "confluence"}
-FILTER_C07 = {"id": "C07", "name": "Red de distribución", "points": 60, "category": "confluence"}
+# --- Confluence filters (C) — Layer system ---
+# Layer 1: Direction confluence (C01/C02 mutually exclusive)
+FILTER_C01 = {"id": "C01", "name": "Confluencia básica", "points": 10, "category": "confluence"}
+FILTER_C02 = {"id": "C02", "name": "Confluencia fuerte", "points": 15, "category": "confluence"}
+# Layer 2: Origin type (C03a-d, additive, each fires independently)
+FILTER_C03A = {"id": "C03a", "name": "Origen exchange compartido", "points": 5, "category": "confluence"}
+FILTER_C03B = {"id": "C03b", "name": "Origen bridge compartido", "points": 20, "category": "confluence"}
+FILTER_C03C = {"id": "C03c", "name": "Origen mixer compartido", "points": 30, "category": "confluence"}
+FILTER_C03D = {"id": "C03d", "name": "Mismo padre directo", "points": 30, "category": "confluence"}
+# Layer 3: Bonus (additive, stacks)
+FILTER_C05 = {"id": "C05", "name": "Fondeo temporal", "points": 10, "category": "confluence"}
+FILTER_C06 = {"id": "C06", "name": "Monto similar", "points": 10, "category": "confluence"}
+# Layer 4: Distribution network
+FILTER_C07 = {"id": "C07", "name": "Red de distribución", "points": 30, "category": "confluence"}
 
 # --- Market filters (M) — 5 filters ---
 FILTER_M01 = {"id": "M01", "name": "Volumen anómalo", "points": 15, "category": "market"}
@@ -192,8 +198,9 @@ ALL_FILTERS: dict[str, dict] = {
         FILTER_B18A, FILTER_B18B, FILTER_B18C, FILTER_B18D, FILTER_B18E,
         FILTER_B19A, FILTER_B19B, FILTER_B19C,
         FILTER_B20, FILTER_B23A, FILTER_B23B,
-        FILTER_C01, FILTER_C02, FILTER_C03, FILTER_C04, FILTER_C05,
-        FILTER_C06, FILTER_C07, FILTER_COORD04,
+        FILTER_C01, FILTER_C02,
+        FILTER_C03A, FILTER_C03B, FILTER_C03C, FILTER_C03D,
+        FILTER_C05, FILTER_C06, FILTER_C07, FILTER_COORD04,
         FILTER_M01, FILTER_M02, FILTER_M03,
         FILTER_M04A, FILTER_M04B, FILTER_M05A, FILTER_M05B, FILTER_M05C,
         FILTER_N01, FILTER_N02, FILTER_N03, FILTER_N04, FILTER_N05,
@@ -210,7 +217,6 @@ MUTUALLY_EXCLUSIVE_GROUPS: list[list[str]] = [
     ["B19a", "B19b", "B19c"],    # whale entry tiers
     ["B23a", "B23b"],            # position sizing tiers
     ["C01", "C02"],              # confluence direction tiers
-    ["C03", "C04"],              # funding source tiers
     ["M04a", "M04b"],            # volume concentration tiers
     ["M05a", "M05b", "M05c"],   # deadline proximity tiers
     ["N06a", "N06b", "N06c"],    # degen tiers
@@ -340,6 +346,25 @@ KNOWN_EXCHANGES: dict[str, str] = {
     "0x6262998ced04146fa42253a5c0af90ca02dfd2a3": "Crypto.com",
     # Gate.io
     "0x0d0707963952f2fba59dd06f2b425ace40b492fe": "Gate.io",
+    # Bybit
+    "0xf89d7b9c864f589bbf53a82105107622b35eaa40": "Bybit",
+}
+
+# Known bridge contracts on Polygon (lowercased)
+KNOWN_BRIDGES: dict[str, str] = {
+    # Polygon PoS Bridge
+    "0xa0c68c638235ee32657e8f720a23cec1bfc6492a": "Polygon PoS Bridge",
+    # Polygon Plasma Bridge
+    "0x401f6c983ea34274ec46f84d70b31c151321188b": "Polygon Plasma Bridge",
+    # Multichain (Anyswap)
+    "0x4f3aff3a747fcade12598081e80c6605a8be192f": "Multichain",
+    # Hop Protocol
+    "0x25d8039bb044dc227f741a9e381ca4ceae2e6ae8": "Hop Protocol",
+    # Across Protocol
+    "0x69b5c72837769ef1e7c164abc6515dcff217f920": "Across Protocol",
+    # Stargate (LayerZero)
+    "0x45a01e4e04f14f7a4a6702c74187c5f6222033cd": "Stargate",
+    "0x2f6f07cdcf3588944bf4c42ac74ff24bf56e7590": "Stargate",
 }
 
 # ============================================================
@@ -412,7 +437,7 @@ MULTIPLIER_PATTERNS: list[dict] = [
         "name": "Insider clásico",
         "multiplier": 1.3,
         "required": {"W01", "W09", "O03"},
-        "any_of": {"C01", "C02", "C04", "C07"},
+        "any_of": {"C01", "C02", "C03d", "C07"},
     },
     {
         "id": "P2",

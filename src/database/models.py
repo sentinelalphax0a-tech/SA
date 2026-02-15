@@ -115,6 +115,10 @@ class WalletFunding:
     hop_level: int = 1
     is_exchange: bool = False
     exchange_name: str | None = None
+    is_bridge: bool = False
+    bridge_name: str | None = None
+    is_mixer: bool = False
+    mixer_name: str | None = None
     created_at: datetime = field(default_factory=datetime.utcnow)
 
 

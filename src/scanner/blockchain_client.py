@@ -273,6 +273,8 @@ class BlockchainClient:
                     continue
 
                 is_exchange, exchange_name = self.is_exchange_address(sender)
+                is_bridge, bridge_name = self.is_bridge_address(sender)
+                is_mixer, mixer_name = self.is_mixer_address(sender)
 
                 results.append(
                     WalletFunding(
@@ -283,6 +285,10 @@ class BlockchainClient:
                         hop_level=hop,
                         is_exchange=is_exchange,
                         exchange_name=exchange_name,
+                        is_bridge=is_bridge,
+                        bridge_name=bridge_name,
+                        is_mixer=is_mixer,
+                        mixer_name=mixer_name,
                     )
                 )
 
@@ -324,6 +330,22 @@ class BlockchainClient:
         """Check if an address belongs to a known exchange."""
         normalized = address.lower()
         for known, name in config.KNOWN_EXCHANGES.items():
+            if known.lower() == normalized:
+                return True, name
+        return False, None
+
+    def is_bridge_address(self, address: str) -> tuple[bool, str | None]:
+        """Check if an address belongs to a known bridge."""
+        normalized = address.lower()
+        for known, name in config.KNOWN_BRIDGES.items():
+            if known.lower() == normalized:
+                return True, name
+        return False, None
+
+    def is_mixer_address(self, address: str) -> tuple[bool, str | None]:
+        """Check if an address belongs to a known mixer/privacy protocol."""
+        normalized = address.lower()
+        for known, name in config.MIXER_ADDRESSES.items():
             if known.lower() == normalized:
                 return True, name
         return False, None
