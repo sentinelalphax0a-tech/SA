@@ -950,15 +950,18 @@ def _analyze_wallet(
     distinct_markets = len({t.market_id for t in all_trades if t.wallet_address == wallet_address})
 
     # Individual trade details for detailed Telegram format
+    # t.price is always the YES token price from the Polymarket API.
+    # Convert to direction-specific effective price for display.
     trade_details = []
     total_weighted_price = 0.0
     for t in accum.trades:
+        eff_price = t.price if direction == "YES" else 1.0 - t.price
         trade_details.append({
             "amount": t.amount,
-            "price": t.price,
+            "price": round(eff_price, 4),
             "timestamp": t.timestamp.isoformat(),
         })
-        total_weighted_price += t.price * t.amount
+        total_weighted_price += eff_price * t.amount
 
     avg_entry = (
         total_weighted_price / accum.total_amount

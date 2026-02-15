@@ -267,20 +267,26 @@ class TestOddsConviction:
         assert len(results) == 0
 
     def test_b25_no_contra_consenso(self):
-        """NO buyer at 0.95 → effective = 0.05 ≤ 0.20 → with consensus → +0."""
+        """NO buyer @ YES price 0.95 → effective = 0.05 < 0.10 → B25a (contrarian).
+
+        Market thinks YES=95%.  NO buyer bets against strong consensus.
+        """
         analyzer = BehaviorAnalyzer()
         trades = [_make_trade(price=0.95, direction="NO")]
-        results = analyzer._check_odds_conviction(trades)
-        assert len(results) == 0
-
-    def test_b25_si_contra_consenso(self):
-        """NO buyer at 0.05 → effective = 0.95 > 0.90 → B25a (+25)."""
-        analyzer = BehaviorAnalyzer()
-        trades = [_make_trade(price=0.05, direction="NO")]
         results = analyzer._check_odds_conviction(trades)
         assert len(results) == 1
         assert results[0].filter_id == "B25a"
         assert results[0].points == config.FILTER_B25A["points"]  # 25
+
+    def test_b25_si_contra_consenso(self):
+        """NO buyer @ YES price 0.05 → effective = 0.95 → no B25 (with consensus).
+
+        Market thinks YES=5%, NO=95%.  NO buyer agrees with consensus.
+        """
+        analyzer = BehaviorAnalyzer()
+        trades = [_make_trade(price=0.05, direction="NO")]
+        results = analyzer._check_odds_conviction(trades)
+        assert len(results) == 0
 
 
 # ── B26 — Stealth accumulation tests ─────────────────────
@@ -358,6 +364,17 @@ class TestAllIn:
             first_trade=datetime.utcnow(), last_trade=datetime.utcnow(),
         )
         results = analyzer._check_all_in(accum, wallet_balance=10000.0)
+        assert len(results) == 0
+
+    def test_b28_below_min_amount(self):
+        """Ratio 90% but only $2K total → no B28 (pocket money)."""
+        analyzer = BehaviorAnalyzer()
+        accum = AccumulationWindow(
+            wallet_address="0xabc", market_id="m1", direction="YES",
+            total_amount=2000.0, trade_count=3,
+            first_trade=datetime.utcnow(), last_trade=datetime.utcnow(),
+        )
+        results = analyzer._check_all_in(accum, wallet_balance=2200.0)
         assert len(results) == 0
 
     def test_b28_excludes_b23(self):
@@ -486,3 +503,84 @@ class TestLongHorizon:
         analyzer = BehaviorAnalyzer()
         results = analyzer._check_long_horizon(None)
         assert len(results) == 0
+
+
+# ── NO direction odds tests ──────────────────────────────
+
+
+class TestB07NoDirection:
+    """B07 uses effective odds: YES→price as-is, NO→1-price."""
+
+    def test_b07_no_direction_high_yes_price(self):
+        """NO buyer @ YES price 0.13 → effective = 0.87 → B07 does NOT fire.
+
+        Market thinks YES is 13%, NO is 87%.  NO buyer is WITH consensus.
+        Effective odds 0.87 is way above the 0.20 threshold.
+        """
+        analyzer = BehaviorAnalyzer()
+        trades = [_make_trade(price=0.13, direction="NO")]
+        results = analyzer._check_against_market(trades)
+        assert len(results) == 0
+
+    def test_b07_no_contra_consenso(self):
+        """NO buyer @ YES price 0.92 → effective = 0.08 → B07 fires.
+
+        Market thinks YES is 92%.  NO buyer bets against strong consensus.
+        Effective odds 0.08 < 0.20 threshold → B07 fires.
+        """
+        analyzer = BehaviorAnalyzer()
+        trades = [_make_trade(price=0.92, direction="NO")]
+        results = analyzer._check_against_market(trades)
+        assert len(results) == 1
+        assert results[0].filter_id == "B07"
+        assert "eff_odds=0.08" in results[0].details
+
+
+class TestB25NoDirection:
+    """B25 uses effective odds: YES→price, NO→1-price. Low effective = contrarian."""
+
+    def test_b25_no_with_consensus(self):
+        """NO buyer @ YES price 0.13 → effective = 0.87 → B25 does NOT fire.
+
+        Market thinks YES=13%, NO=87%.  NO buyer agrees with consensus.
+        Effective 0.87 > 0.35 → no B25 (not contrarian).
+        """
+        analyzer = BehaviorAnalyzer()
+        trades = [_make_trade(price=0.13, direction="NO")]
+        results = analyzer._check_odds_conviction(trades)
+        assert len(results) == 0
+
+    def test_b25_no_against_consensus(self):
+        """NO buyer @ YES price 0.95 → effective = 0.05 → B25a fires.
+
+        Market thinks YES=95%.  NO buyer bets against very strong consensus.
+        Effective 0.05 < 0.10 → B25a (extreme conviction).
+        """
+        analyzer = BehaviorAnalyzer()
+        trades = [_make_trade(price=0.95, direction="NO")]
+        results = analyzer._check_odds_conviction(trades)
+        assert len(results) == 1
+        assert results[0].filter_id == "B25a"
+
+    def test_b25_no_moderate_contrarian(self):
+        """NO buyer @ YES price 0.75 → effective = 0.25 → B25c fires.
+
+        Market thinks YES=75%.  NO buyer is moderately contrarian.
+        Effective 0.25 is between 0.20 and 0.35 → B25c.
+        """
+        analyzer = BehaviorAnalyzer()
+        trades = [_make_trade(price=0.75, direction="NO")]
+        results = analyzer._check_odds_conviction(trades)
+        assert len(results) == 1
+        assert results[0].filter_id == "B25c"
+
+    def test_b25_yes_still_works(self):
+        """YES buyer @ price 0.08 → effective = 0.08 → B25a fires.
+
+        Regression: YES branch must still work after refactor.
+        """
+        analyzer = BehaviorAnalyzer()
+        trades = [_make_trade(price=0.08, direction="YES")]
+        results = analyzer._check_odds_conviction(trades)
+        assert len(results) == 1
+        assert results[0].filter_id == "B25a"

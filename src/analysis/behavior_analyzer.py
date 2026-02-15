@@ -250,10 +250,18 @@ class BehaviorAnalyzer:
     # ── B07 — Buying against market ──────────────────────────
 
     def _check_against_market(self, trades: list[TradeEvent]) -> list[FilterResult]:
-        """B07 — Buying at odds < 0.20."""
+        """B07 — Buying at effective odds < 0.20.
+
+        t.price is always the YES token price from the Polymarket API.
+        For NO buyers, effective odds = 1.0 - t.price.
+        """
         for t in trades:
-            if t.price < config.AGAINST_MARKET_ODDS:
-                return [_fr(config.FILTER_B07, f"price={t.price:.2f}")]
+            effective = t.price if t.direction == "YES" else 1.0 - t.price
+            if effective < config.AGAINST_MARKET_ODDS:
+                return [_fr(
+                    config.FILTER_B07,
+                    f"eff_odds={effective:.2f} ({t.direction}@{t.price:.2f})",
+                )]
         return []
 
     # ── B14 — First big buy ──────────────────────────────────
@@ -417,10 +425,11 @@ class BehaviorAnalyzer:
         """B25a-c — Conviction scoring for bets against market consensus.
 
         Only rewards bets where the wallet goes AGAINST the majority.
-        For YES buyers: low entry price = contrarian.
-        For NO buyers: compute effective = 1 - entry_price, then:
-          effective ≤ 0.20 → with consensus → +0
-          higher effective → contrarian → apply mirrored tiers.
+        t.price is always the YES token price from the Polymarket API.
+        We convert to effective odds (direction-adjusted):
+          YES buyers: effective = avg_price   (low = contrarian)
+          NO buyers:  effective = 1 - avg_price (low = contrarian)
+        Then apply the same tier thresholds to both.
         """
         if not trades:
             return []
@@ -428,31 +437,22 @@ class BehaviorAnalyzer:
         direction = trades[0].direction
         avg_price = sum(t.price for t in trades) / len(trades)
 
+        # Convert to direction-adjusted effective odds
+        # Low effective = betting against market consensus = contrarian
         if direction == "YES":
-            # Low YES price = market thinks YES unlikely = contrarian
-            if avg_price < config.CONVICTION_EXTREME_MAX:
-                return [_fr(config.FILTER_B25A, f"YES@{avg_price:.2f}")]
-            if avg_price < config.CONVICTION_HIGH_MAX:
-                return [_fr(config.FILTER_B25B, f"YES@{avg_price:.2f}")]
-            if avg_price < config.CONVICTION_MODERATE_MAX:
-                return [_fr(config.FILTER_B25C, f"YES@{avg_price:.2f}")]
-            return []
+            effective = avg_price
+        else:
+            effective = 1.0 - avg_price
 
-        # direction == "NO"
-        # effective = YES price ≈ 1 - NO price
-        effective = 1.0 - avg_price
+        tag = f"{direction}@{avg_price:.2f}, eff={effective:.2f}"
 
-        # Low effective = market agrees with NO → with consensus → +0
-        if effective <= config.CONVICTION_NO_CONSENSUS:
-            return []
-
-        # High effective = market favors YES → NO buyer is contrarian
-        if effective > 0.90:
-            return [_fr(config.FILTER_B25A, f"NO@{avg_price:.2f}, eff={effective:.2f}")]
-        if effective > 0.80:
-            return [_fr(config.FILTER_B25B, f"NO@{avg_price:.2f}, eff={effective:.2f}")]
-        # effective 0.20-0.80 → moderate contrarian
-        return [_fr(config.FILTER_B25C, f"NO@{avg_price:.2f}, eff={effective:.2f}")]
+        if effective < config.CONVICTION_EXTREME_MAX:
+            return [_fr(config.FILTER_B25A, tag)]
+        if effective < config.CONVICTION_HIGH_MAX:
+            return [_fr(config.FILTER_B25B, tag)]
+        if effective < config.CONVICTION_MODERATE_MAX:
+            return [_fr(config.FILTER_B25C, tag)]
+        return []
 
     # ── B26a-b — Stealth accumulation ──────────────────────
 
@@ -592,6 +592,8 @@ class BehaviorAnalyzer:
         if wallet_balance is None or wallet_balance < 50:
             return []
         if accum.total_amount < 50:
+            return []
+        if accum.total_amount < config.ALLIN_MIN_AMOUNT:
             return []
 
         position_ratio = accum.total_amount / wallet_balance

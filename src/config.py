@@ -317,8 +317,6 @@ ROUND_BALANCE_TOLERANCE: float = 0.01  # ±1%
 CONVICTION_EXTREME_MAX: float = 0.10    # B25a: odds < 0.10
 CONVICTION_HIGH_MAX: float = 0.20       # B25b: odds 0.10-0.20
 CONVICTION_MODERATE_MAX: float = 0.35   # B25c: odds 0.20-0.35
-CONVICTION_NO_CONSENSUS: float = 0.20   # NO buyer: effective ≤ 0.20 → with consensus
-
 # Stealth accumulation thresholds (B26)
 STEALTH_WHALE_MOVE: float = 0.01        # B26a: price_move < 1%
 STEALTH_WHALE_MIN: float = 5000.0       # B26a: total > $5k
@@ -336,6 +334,7 @@ DIAMOND_HANDS_LONG_ODDS_MOVE: float = 0.10   # B27b: odds improved >10%
 # All-in (B28) — mutually exclusive with B23; B28 evaluated first
 ALLIN_EXTREME_MIN: float = 0.90   # B28a: >90% of balance
 ALLIN_STRONG_MIN: float = 0.70    # B28b: 70-90% of balance
+ALLIN_MIN_AMOUNT: float = 3500.0  # B28: min $3.5K (below = pocket money, not insider)
 
 # First mover (B30) — disabled until trades history table exists in Supabase
 ENABLE_B30: bool = False
