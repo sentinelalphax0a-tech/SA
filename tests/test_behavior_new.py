@@ -82,6 +82,7 @@ class TestB23PositionSizing:
 
 class TestB23InAnalyze:
     def test_analyze_passes_wallet_balance(self):
+        """$7K / $10K = 70% → B28b fires (all-in), suppressing B23."""
         ba = BehaviorAnalyzer()
         trades = [_trade(7000.0)]
         results = ba.analyze(
@@ -92,7 +93,8 @@ class TestB23InAnalyze:
             wallet_balance=10000.0,
         )
         filter_ids = {f.filter_id for f in results}
-        assert "B23b" in filter_ids
+        assert "B28b" in filter_ids
+        assert "B23b" not in filter_ids  # B28 suppresses B23
 
     def test_analyze_without_balance_no_b23(self):
         ba = BehaviorAnalyzer()

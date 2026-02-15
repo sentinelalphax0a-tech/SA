@@ -142,6 +142,23 @@ FILTER_B20 = {"id": "B20", "name": "Vieja nueva en PM", "points": 20, "category"
 # Position sizing (B23a-b mutually exclusive)
 FILTER_B23A = {"id": "B23a", "name": "Posición significativa", "points": 15, "category": "behavior"}
 FILTER_B23B = {"id": "B23b", "name": "Posición dominante", "points": 30, "category": "behavior"}
+# Odds conviction (B25a-c mutually exclusive)
+FILTER_B25A = {"id": "B25a", "name": "Convicción extrema", "points": 25, "category": "behavior"}
+FILTER_B25B = {"id": "B25b", "name": "Convicción alta", "points": 15, "category": "behavior"}
+FILTER_B25C = {"id": "B25c", "name": "Convicción moderada", "points": 5, "category": "behavior"}
+# Stealth accumulation (B26a-b mutually exclusive, replaces B18e)
+FILTER_B26A = {"id": "B26a", "name": "Stealth whale", "points": 20, "category": "behavior"}
+FILTER_B26B = {"id": "B26b", "name": "Low impact", "points": 10, "category": "behavior"}
+# Diamond hands (B27a-b mutually exclusive, disabled until sell_detector covers pre-alert)
+FILTER_B27A = {"id": "B27a", "name": "Diamond hands 48h", "points": 15, "category": "behavior"}
+FILTER_B27B = {"id": "B27b", "name": "Diamond hands 72h+", "points": 20, "category": "behavior"}
+# All-in (B28a-b mutually exclusive with B23)
+FILTER_B28A = {"id": "B28a", "name": "All-in extremo", "points": 25, "category": "behavior"}
+FILTER_B28B = {"id": "B28b", "name": "All-in fuerte", "points": 20, "category": "behavior"}
+# First mover (B30a-c mutually exclusive, disabled until trades table exists)
+FILTER_B30A = {"id": "B30a", "name": "First mover", "points": 20, "category": "behavior"}
+FILTER_B30B = {"id": "B30b", "name": "Early mover top 3", "points": 10, "category": "behavior"}
+FILTER_B30C = {"id": "B30c", "name": "Early mover top 5", "points": 5, "category": "behavior"}
 
 # --- Confluence filters (C) — Layer system ---
 # Layer 1: Direction confluence (C01/C02 mutually exclusive)
@@ -185,6 +202,13 @@ FILTER_N07A = {"id": "N07a", "name": "Scalper leve", "points": -20, "category": 
 FILTER_N07B = {"id": "N07b", "name": "Scalper serial", "points": -40, "category": "negative"}
 # Anti-bot evasion
 FILTER_N08 = {"id": "N08", "name": "Anti-bot evasión", "points": 25, "category": "behavior"}
+# Obvious bet (N09a-b mutually exclusive, opposite of B25)
+FILTER_N09A = {"id": "N09a", "name": "Apuesta obvia extrema", "points": -40, "category": "negative"}
+FILTER_N09B = {"id": "N09b", "name": "Apuesta obvia", "points": -25, "category": "negative"}
+# Long-horizon discount (N10a-c mutually exclusive)
+FILTER_N10A = {"id": "N10a", "name": "Horizonte lejano", "points": -10, "category": "negative"}
+FILTER_N10B = {"id": "N10b", "name": "Horizonte muy lejano", "points": -20, "category": "negative"}
+FILTER_N10C = {"id": "N10c", "name": "Horizonte extremo", "points": -30, "category": "negative"}
 
 # Master registry: id → filter dict
 ALL_FILTERS: dict[str, dict] = {
@@ -198,6 +222,11 @@ ALL_FILTERS: dict[str, dict] = {
         FILTER_B18A, FILTER_B18B, FILTER_B18C, FILTER_B18D, FILTER_B18E,
         FILTER_B19A, FILTER_B19B, FILTER_B19C,
         FILTER_B20, FILTER_B23A, FILTER_B23B,
+        FILTER_B25A, FILTER_B25B, FILTER_B25C,
+        FILTER_B26A, FILTER_B26B,
+        FILTER_B27A, FILTER_B27B,
+        FILTER_B28A, FILTER_B28B,
+        FILTER_B30A, FILTER_B30B, FILTER_B30C,
         FILTER_C01, FILTER_C02,
         FILTER_C03A, FILTER_C03B, FILTER_C03C, FILTER_C03D,
         FILTER_C05, FILTER_C06, FILTER_C07, FILTER_COORD04,
@@ -206,6 +235,8 @@ ALL_FILTERS: dict[str, dict] = {
         FILTER_N01, FILTER_N02, FILTER_N03, FILTER_N04, FILTER_N05,
         FILTER_N06A, FILTER_N06B, FILTER_N06C,
         FILTER_N07A, FILTER_N07B, FILTER_N08,
+        FILTER_N09A, FILTER_N09B,
+        FILTER_N10A, FILTER_N10B, FILTER_N10C,
     ]
 }
 
@@ -216,11 +247,18 @@ MUTUALLY_EXCLUSIVE_GROUPS: list[list[str]] = [
     ["B18a", "B18b", "B18c", "B18d"],  # accumulation tiers
     ["B19a", "B19b", "B19c"],    # whale entry tiers
     ["B23a", "B23b"],            # position sizing tiers
+    ["B25a", "B25b", "B25c"],   # odds conviction tiers
+    ["B26a", "B26b"],           # stealth accumulation tiers
+    ["B27a", "B27b"],           # diamond hands tiers
+    ["B28a", "B28b"],           # all-in tiers (mut. excl. with B23)
+    ["B30a", "B30b", "B30c"],  # first mover tiers
     ["C01", "C02"],              # confluence direction tiers
     ["M04a", "M04b"],            # volume concentration tiers
     ["M05a", "M05b", "M05c"],   # deadline proximity tiers
     ["N06a", "N06b", "N06c"],    # degen tiers
     ["N07a", "N07b"],            # scalper tiers
+    ["N09a", "N09b"],            # obvious bet tiers
+    ["N10a", "N10b", "N10c"],   # long-horizon discount tiers
 ]
 
 # Filters that trigger Telegram-only whale alerts (bypass normal routing)
@@ -275,6 +313,35 @@ OLD_WALLET_PM_MAX_DAYS: int = 7       # PM activity < 7 days
 ROUND_BALANCES: list[float] = [5000.0, 10000.0, 50000.0]
 ROUND_BALANCE_TOLERANCE: float = 0.01  # ±1%
 
+# Odds conviction thresholds (B25)
+CONVICTION_EXTREME_MAX: float = 0.10    # B25a: odds < 0.10
+CONVICTION_HIGH_MAX: float = 0.20       # B25b: odds 0.10-0.20
+CONVICTION_MODERATE_MAX: float = 0.35   # B25c: odds 0.20-0.35
+CONVICTION_NO_CONSENSUS: float = 0.20   # NO buyer: effective ≤ 0.20 → with consensus
+
+# Stealth accumulation thresholds (B26)
+STEALTH_WHALE_MOVE: float = 0.01        # B26a: price_move < 1%
+STEALTH_WHALE_MIN: float = 5000.0       # B26a: total > $5k
+STEALTH_LOW_IMPACT_MOVE: float = 0.03   # B26b: price_move < 3%
+STEALTH_LOW_IMPACT_MIN: float = 3000.0  # B26b: total > $3k
+
+# Diamond hands (B27) — disabled until sell_detector covers pre-alert wallets
+ENABLE_B27: bool = False
+DIAMOND_HANDS_SHORT_MIN_HOURS: int = 24   # B27a: held 24-48h
+DIAMOND_HANDS_SHORT_MAX_HOURS: int = 48
+DIAMOND_HANDS_SHORT_ODDS_MOVE: float = 0.05  # B27a: odds improved >5%
+DIAMOND_HANDS_LONG_MIN_HOURS: int = 72    # B27b: held 72h+
+DIAMOND_HANDS_LONG_ODDS_MOVE: float = 0.10   # B27b: odds improved >10%
+
+# All-in (B28) — mutually exclusive with B23; B28 evaluated first
+ALLIN_EXTREME_MIN: float = 0.90   # B28a: >90% of balance
+ALLIN_STRONG_MIN: float = 0.70    # B28b: 70-90% of balance
+
+# First mover (B30) — disabled until trades history table exists in Supabase
+ENABLE_B30: bool = False
+FIRST_MOVER_MIN_AMOUNT: float = 1000.0  # minimum $1K to count
+FIRST_MOVER_LOOKBACK_HOURS: int = 24    # look back 24h for prior buyers
+
 # Confluence thresholds
 SENDER_MAX_MARKETS: int = 3               # Super-sender: exclude if funding wallets in >3 markets
 CONFLUENCE_BASIC_MIN_WALLETS: int = 3     # C01: 3+ wallets
@@ -327,6 +394,15 @@ COPY_TRADE_MAX_DELAY_MIN: int = 10
 DEGEN_LIGHT_MAX: int = 2      # N06a: 1-2 non-political markets
 DEGEN_MODERATE_MAX: int = 5   # N06b: 3-5
 DEGEN_HEAVY_MIN: int = 6      # N06c: 6+
+
+# Obvious bet thresholds (N09) — opposite of B25
+OBVIOUS_BET_EXTREME: float = 0.90   # N09a: odds > 0.90 in wallet's direction
+OBVIOUS_BET_HIGH: float = 0.85      # N09b: odds > 0.85
+
+# Long-horizon discount thresholds (N10) — days until resolution
+LONG_HORIZON_EXTREME: int = 90      # N10c: > 90 days → -30
+LONG_HORIZON_HIGH: int = 60         # N10b: > 60 days → -20
+LONG_HORIZON_MODERATE: int = 30     # N10a: > 30 days → -10
 
 # Known exchanges for origin detection (O01) — Polygon hot wallets
 KNOWN_EXCHANGES: dict[str, str] = {

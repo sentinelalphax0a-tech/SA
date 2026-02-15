@@ -888,6 +888,7 @@ def _analyze_wallet(
             market_id=market.market_id,
             current_odds=market.current_odds,
             wallet_balance=wallet_balance,
+            resolution_date=market.resolution_date,
         )
         filters.extend(b_filters)
     except Exception as e:
