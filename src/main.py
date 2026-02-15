@@ -73,6 +73,29 @@ def _dominant_direction(trades: list[TradeEvent]) -> str:
     return "YES" if yes_total >= no_total else "NO"
 
 
+def _filter_wallets_by_direction(
+    wallets: list[dict],
+    filter_sets: list[list[FilterResult]],
+) -> tuple[str, list[dict], list[list[FilterResult]]]:
+    """Filter wallets to only the dominant direction.
+
+    Prevents mixing YES and NO wallets in the same alert.
+    Direction is determined by total amount among analyzed wallets.
+    Returns (direction, filtered_wallets, filtered_filter_sets).
+    """
+    yes_amt = sum(w["total_amount"] for w in wallets if w.get("direction") == "YES")
+    no_amt = sum(w["total_amount"] for w in wallets if w.get("direction") == "NO")
+    direction = "YES" if yes_amt >= no_amt else "NO"
+
+    filtered = [
+        (w, f) for w, f in zip(wallets, filter_sets)
+        if w.get("direction") == direction
+    ]
+    filtered_wallets = [w for w, _ in filtered]
+    filtered_filters = [f for _, f in filtered]
+    return direction, filtered_wallets, filtered_filters
+
+
 def _compute_accumulation(
     wallet_address: str,
     trades: list[TradeEvent],
@@ -702,6 +725,13 @@ def _process_market(
     if not analyzed_wallets:
         return None
 
+    # ── 4f. Filter wallets by dominant direction ───────────────
+    direction, analyzed_wallets, wallet_filter_sets = _filter_wallets_by_direction(
+        analyzed_wallets, wallet_filter_sets,
+    )
+    if not analyzed_wallets:
+        return None
+
     # ── 5a. Market-level analysis ────────────────────────────
     market_filters: list[FilterResult] = []
     try:
@@ -710,8 +740,8 @@ def _process_market(
         logger.error("Market analyzer failed for %s: %s", market.market_id[:12], e)
 
     # ── 5b. Confluence detection ─────────────────────────────
+    # `direction` was already set in step 4f (from analyzed wallets).
     confluence_filters: list[FilterResult] = []
-    direction = _dominant_direction(trades)
 
     try:
         wallets_for_confluence = [

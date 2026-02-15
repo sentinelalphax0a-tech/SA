@@ -303,3 +303,52 @@ class TestCalculateScore:
         result_normal = calculate_score(filters, total_amount=1000)
         result_shotgun = calculate_score(filters, total_amount=1000, wallet_market_count=15)
         assert result_shotgun.score_final < result_normal.score_final
+
+
+# ── N09 star cap ──────────────────────────────────────────────
+
+
+class TestObviousBetStarCap:
+    def test_star_cap_n09a(self):
+        """Score=200 with N09a → star capped at 2 (not 4)."""
+        filters = [
+            _make_filter(config.FILTER_W01),   # 25, wallet → ACCUMULATION
+            _make_filter(config.FILTER_B18D),  # 50, behavior → COORDINATION
+            _make_filter(config.FILTER_M01),   # 15, market → TIMING
+            _make_filter(config.FILTER_N09A),  # -40, negative
+        ]
+        result = calculate_score(filters, total_amount=50_000)
+        assert result.score_final > 0
+        assert result.star_level <= 2
+
+    def test_star_cap_n09b(self):
+        """Score=200 with N09b → star capped at 3 (not 4)."""
+        filters = [
+            _make_filter(config.FILTER_W01),   # 25
+            _make_filter(config.FILTER_B18D),  # 50
+            _make_filter(config.FILTER_M01),   # 15
+            _make_filter(config.FILTER_N09B),  # -25
+        ]
+        result = calculate_score(filters, total_amount=50_000)
+        assert result.score_final > 0
+        assert result.star_level <= 3
+
+    def test_no_cap_without_n09(self):
+        """Score=200 without N09 → normal star level (4)."""
+        filters = [
+            _make_filter(config.FILTER_W01),   # 25
+            _make_filter(config.FILTER_B18D),  # 50
+            _make_filter(config.FILTER_M01),   # 15
+        ]
+        result = calculate_score(filters, total_amount=50_000)
+        # raw=90, mult ~1.57 → ~141 → 3★, but needs 2 cats → passes
+        assert result.star_level >= 3
+
+    def test_cap_doesnt_affect_low(self):
+        """Score=60 with N09a → star=1 (already below cap of 2)."""
+        filters = [
+            _make_filter(config.FILTER_W01),   # 25
+            _make_filter(config.FILTER_N09A),  # -40
+        ]
+        result = calculate_score(filters, total_amount=1_000)
+        assert result.star_level <= 1

@@ -377,6 +377,30 @@ class TestAllIn:
         results = analyzer._check_all_in(accum, wallet_balance=2200.0)
         assert len(results) == 0
 
+    def test_b28_below_floor(self):
+        """$548 balance, 100% ratio → no B28 (below $3.5K floor)."""
+        analyzer = BehaviorAnalyzer()
+        accum = AccumulationWindow(
+            wallet_address="0xabc", market_id="m1", direction="YES",
+            total_amount=548.0, trade_count=1,
+            first_trade=datetime.utcnow(), last_trade=datetime.utcnow(),
+        )
+        results = analyzer._check_all_in(accum, wallet_balance=548.0)
+        assert len(results) == 0
+
+    def test_b28_above_floor(self):
+        """$5000, 96% ratio → B28a (+25)."""
+        analyzer = BehaviorAnalyzer()
+        accum = AccumulationWindow(
+            wallet_address="0xabc", market_id="m1", direction="YES",
+            total_amount=5000.0, trade_count=3,
+            first_trade=datetime.utcnow(), last_trade=datetime.utcnow(),
+        )
+        results = analyzer._check_all_in(accum, wallet_balance=5200.0)
+        assert len(results) == 1
+        assert results[0].filter_id == "B28a"
+        assert results[0].points == config.FILTER_B28A["points"]
+
     def test_b28_excludes_b23(self):
         """When B28 fires (ratio=0.95), B23 does NOT fire."""
         analyzer = BehaviorAnalyzer()

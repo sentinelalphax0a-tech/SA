@@ -397,6 +397,8 @@ DEGEN_HEAVY_MIN: int = 6      # N06c: 6+
 # Obvious bet thresholds (N09) — opposite of B25
 OBVIOUS_BET_EXTREME: float = 0.90   # N09a: odds > 0.90 in wallet's direction
 OBVIOUS_BET_HIGH: float = 0.85      # N09b: odds > 0.85
+OBVIOUS_BET_STAR_CAP_EXTREME: int = 2  # N09a (price > 0.90) → max 2★
+OBVIOUS_BET_STAR_CAP_HIGH: int = 3     # N09b (price > 0.85) → max 3★
 
 # Long-horizon discount thresholds (N10) — days until resolution
 LONG_HORIZON_EXTREME: int = 90      # N10c: > 90 days → -30

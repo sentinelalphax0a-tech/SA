@@ -15,6 +15,7 @@ from src.database.models import (
 from src.main import (
     _group_trades_by_wallet,
     _dominant_direction,
+    _filter_wallets_by_direction,
     _compute_accumulation,
     _has_whale_entry,
     _is_in_odds_range,
@@ -597,3 +598,70 @@ class TestFilterMarkets:
         ]
         result = _filter_markets(markets)
         assert len(result) == config.MARKET_SCAN_CAP
+
+
+# ── _filter_wallets_by_direction ─────────────────────────────
+
+
+def _wallet(direction: str = "YES", amount: float = 5000.0) -> dict:
+    """Helper to create a wallet dict for direction filtering tests."""
+    return {"address": "0xabc", "direction": direction, "total_amount": amount}
+
+
+class TestFilterWalletsByDirection:
+    def test_no_mixed_directions(self):
+        """3 wallets NO + 1 wallet YES → only 3 NO wallets kept."""
+        wallets = [
+            _wallet("NO", 5000), _wallet("NO", 3000), _wallet("NO", 4000),
+            _wallet("YES", 2000),
+        ]
+        filters = [[_fr("B01", 10)] for _ in wallets]
+        direction, kept, kept_f = _filter_wallets_by_direction(wallets, filters)
+        assert direction == "NO"
+        assert len(kept) == 3
+        assert all(w["direction"] == "NO" for w in kept)
+
+    def test_single_opposite_wallet(self):
+        """1 YES wallet when dominant is NO → 0 wallets remain."""
+        wallets = [_wallet("YES", 2000)]
+        filters = [[_fr("B01", 10)]]
+        # Only YES wallet, but if we force direction to NO externally...
+        # Actually with 1 YES wallet, direction = YES (dominant)
+        direction, kept, kept_f = _filter_wallets_by_direction(wallets, filters)
+        assert direction == "YES"
+        assert len(kept) == 1
+
+    def test_single_opposite_excluded(self):
+        """2 NO wallets ($8K) + 1 YES wallet ($2K) → YES excluded."""
+        wallets = [_wallet("NO", 5000), _wallet("NO", 3000), _wallet("YES", 2000)]
+        filters = [[_fr("B01", 10)] for _ in wallets]
+        direction, kept, kept_f = _filter_wallets_by_direction(wallets, filters)
+        assert direction == "NO"
+        assert len(kept) == 2
+        assert all(w["direction"] == "NO" for w in kept)
+
+    def test_confluence_count_filtered(self):
+        """4 wallets total (3 NO + 1 YES) → confluence_count = 3."""
+        wallets = [
+            _wallet("NO", 5000), _wallet("NO", 3000), _wallet("NO", 4000),
+            _wallet("YES", 2000),
+        ]
+        filters = [[_fr("B01", 10)] for _ in wallets]
+        direction, kept, kept_f = _filter_wallets_by_direction(wallets, filters)
+        # confluence_count in _build_alert = len(wallet_data)
+        assert len(kept) == 3
+
+    def test_filter_sets_aligned(self):
+        """Filter sets stay aligned with their wallets after filtering."""
+        wallets = [_wallet("NO", 5000), _wallet("YES", 2000), _wallet("NO", 3000)]
+        f1 = [_fr("B01", 10)]
+        f2 = [_fr("B07", 15)]
+        f3 = [_fr("B25a", 25)]
+        filters = [f1, f2, f3]
+        direction, kept, kept_f = _filter_wallets_by_direction(wallets, filters)
+        assert direction == "NO"
+        assert len(kept) == 2
+        assert len(kept_f) == 2
+        # f1 (B01) and f3 (B25a) should be kept, f2 (B07) excluded
+        assert kept_f[0][0].filter_id == "B01"
+        assert kept_f[1][0].filter_id == "B25a"

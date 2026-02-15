@@ -73,6 +73,9 @@ def calculate_score(
         star_level, categories, total_amount, filters,
     )
 
+    # 8. Star cap for obvious bets (N09)
+    star_level = _apply_obvious_bet_cap(star_level, filters)
+
     return ScoringResult(
         score_raw=score_raw,
         multiplier=multiplier,
@@ -205,4 +208,21 @@ def _validate_stars(
         # All requirements met
         break
 
+    return star_level
+
+
+def _apply_obvious_bet_cap(
+    star_level: int,
+    filters: list[FilterResult],
+) -> int:
+    """Cap star level when N09 (obvious bet) filters are present.
+
+    N09a (extreme obvious, price > 0.90) → max 2★
+    N09b (obvious, price > 0.85)         → max 3★
+    """
+    filter_ids = {f.filter_id for f in filters}
+    if "N09a" in filter_ids:
+        return min(star_level, config.OBVIOUS_BET_STAR_CAP_EXTREME)
+    if "N09b" in filter_ids:
+        return min(star_level, config.OBVIOUS_BET_STAR_CAP_HIGH)
     return star_level
