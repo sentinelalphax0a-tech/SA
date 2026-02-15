@@ -202,53 +202,84 @@ class PolymarketClient:
             opposite_market=raw.get("negRiskMarketID"),
         )
 
-    # ── Market Resolution (Gamma API) ─────────────────────
+    # ── Market Resolution (CLOB API) ──────────────────────
 
     def get_market_resolution(self, market_id: str) -> dict | None:
         """Check if a market is resolved and determine the outcome.
 
+        Uses the CLOB API (GET /markets/{condition_id}) which returns
+        the exact market with verified condition_id, closed status,
+        and token winner flags.
+
         Returns:
             {"resolved": True, "outcome": "YES"|"NO"} if resolved,
             {"resolved": False} if still active,
-            None on API failure.
+            None on API failure or condition_id mismatch.
         """
         try:
             resp = self.session.get(
-                f"{self.gamma_base}/markets",
-                params={"conditionId": market_id, "limit": 1},
+                f"{self.clob_base}/markets/{market_id}",
                 timeout=10,
             )
             resp.raise_for_status()
             data = resp.json()
-            if not data:
+
+            # 1. Verify condition_id matches what we asked for
+            returned_id = data.get("condition_id", "")
+            if returned_id != market_id:
+                logger.warning(
+                    "CLOB condition_id mismatch: asked=%s, got=%s",
+                    market_id[:16], returned_id[:16],
+                )
                 return None
 
-            raw = data[0]
-            is_closed = bool(raw.get("closed", False))
-
-            if not is_closed:
+            # 2. Not closed → market still open
+            if not data.get("closed", False):
                 return {"resolved": False}
 
-            # Determine outcome from outcomePrices
-            outcome_prices = raw.get("outcomePrices", "[]")
-            if isinstance(outcome_prices, str):
+            # 3. Safety: end_date in future + active → not truly resolved
+            end_date_str = data.get("end_date_iso")
+            if end_date_str and data.get("active", False):
                 try:
-                    outcome_prices = json.loads(outcome_prices)
-                except (json.JSONDecodeError, TypeError):
-                    outcome_prices = []
-
-            outcome = None
-            if len(outcome_prices) >= 2:
-                try:
-                    yes_price = float(outcome_prices[0])
-                    if yes_price > 0.9:
-                        outcome = "YES"
-                    elif yes_price < 0.1:
-                        outcome = "NO"
-                except (ValueError, TypeError):
+                    end_date = datetime.fromisoformat(
+                        end_date_str.replace("Z", "+00:00")
+                    )
+                    if end_date > datetime.now(timezone.utc):
+                        logger.warning(
+                            "Market %s closed but end_date %s is future, skipping",
+                            market_id[:16], end_date_str[:10],
+                        )
+                        return {"resolved": False}
+                except ValueError:
                     pass
 
-            return {"resolved": True, "outcome": outcome}
+            # 4. Determine outcome from tokens[].winner flag
+            tokens = data.get("tokens") or []
+            for token in tokens:
+                if token.get("winner") is True:
+                    outcome_str = (token.get("outcome") or "").upper()
+                    if outcome_str == "YES":
+                        return {"resolved": True, "outcome": "YES"}
+                    elif outcome_str == "NO":
+                        return {"resolved": True, "outcome": "NO"}
+
+            # 5. Fallback: no winner flag but closed — use price
+            for token in tokens:
+                outcome_str = (token.get("outcome") or "").upper()
+                price = token.get("price")
+                if price is not None:
+                    if outcome_str == "YES" and float(price) > 0.9:
+                        return {"resolved": True, "outcome": "YES"}
+                    if outcome_str == "NO" and float(price) > 0.9:
+                        return {"resolved": True, "outcome": "NO"}
+
+            # 6. Closed but outcome unclear — don't resolve
+            logger.warning(
+                "Market %s is closed but no clear outcome, skipping",
+                market_id[:16],
+            )
+            return None
+
         except Exception as e:
             logger.error("get_market_resolution failed for %s: %s", market_id, e)
             return None

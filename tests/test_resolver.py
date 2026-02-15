@@ -1,9 +1,12 @@
 """Tests for the market resolver module."""
 
 from datetime import datetime, timedelta, timezone
-from unittest.mock import MagicMock, call
+from unittest.mock import MagicMock, call, patch
+
+import pytest
 
 from src.tracking.resolver import MarketResolver
+from src.scanner.polymarket_client import PolymarketClient
 
 
 def _make_resolver():
@@ -277,3 +280,159 @@ class TestMarketResolver:
 
         assert result["correct"] == 1
         db.update_wallet_stats.assert_not_called()
+
+
+# ── Tests for get_market_resolution (CLOB API) ──────────────
+
+
+def _clob_response(
+    condition_id="0xABC",
+    closed=False,
+    active=True,
+    end_date_iso=None,
+    tokens=None,
+):
+    """Build a mock CLOB API response dict."""
+    if tokens is None:
+        tokens = [
+            {"outcome": "Yes", "price": 0.5, "winner": False},
+            {"outcome": "No", "price": 0.5, "winner": False},
+        ]
+    resp = {
+        "condition_id": condition_id,
+        "closed": closed,
+        "active": active,
+        "tokens": tokens,
+    }
+    if end_date_iso is not None:
+        resp["end_date_iso"] = end_date_iso
+    return resp
+
+
+class TestGetMarketResolution:
+    """Tests for PolymarketClient.get_market_resolution (CLOB API)."""
+
+    def _make_client(self, json_data, status_code=200):
+        """Create a PolymarketClient with a mocked session."""
+        client = PolymarketClient()
+        mock_resp = MagicMock()
+        mock_resp.status_code = status_code
+        mock_resp.json.return_value = json_data
+        mock_resp.raise_for_status.return_value = None
+        if status_code >= 400:
+            mock_resp.raise_for_status.side_effect = Exception(f"HTTP {status_code}")
+        client.session = MagicMock()
+        client.session.get.return_value = mock_resp
+        return client
+
+    def test_open_market_returns_not_resolved(self):
+        """closed=False → resolved=False."""
+        client = self._make_client(_clob_response(
+            condition_id="0xABC", closed=False,
+        ))
+        result = client.get_market_resolution("0xABC")
+        assert result == {"resolved": False}
+
+    def test_condition_id_mismatch_returns_none(self):
+        """API returns wrong condition_id → None (safety)."""
+        client = self._make_client(_clob_response(
+            condition_id="0xWRONG", closed=True,
+            tokens=[{"outcome": "Yes", "price": 1.0, "winner": True}],
+        ))
+        result = client.get_market_resolution("0xABC")
+        assert result is None
+
+    def test_resolved_yes_via_winner_flag(self):
+        """closed=True + Yes token winner=True → YES."""
+        client = self._make_client(_clob_response(
+            condition_id="0xABC", closed=True, active=True,
+            end_date_iso="2020-01-01T00:00:00Z",
+            tokens=[
+                {"outcome": "Yes", "price": 1.0, "winner": True},
+                {"outcome": "No", "price": 0.0, "winner": False},
+            ],
+        ))
+        result = client.get_market_resolution("0xABC")
+        assert result == {"resolved": True, "outcome": "YES"}
+
+    def test_resolved_no_via_winner_flag(self):
+        """closed=True + No token winner=True → NO."""
+        client = self._make_client(_clob_response(
+            condition_id="0xABC", closed=True, active=True,
+            end_date_iso="2020-01-01T00:00:00Z",
+            tokens=[
+                {"outcome": "Yes", "price": 0.0, "winner": False},
+                {"outcome": "No", "price": 1.0, "winner": True},
+            ],
+        ))
+        result = client.get_market_resolution("0xABC")
+        assert result == {"resolved": True, "outcome": "NO"}
+
+    def test_future_end_date_active_returns_not_resolved(self):
+        """closed=True but end_date in future + active → safety: not resolved."""
+        future = (datetime.now(timezone.utc) + timedelta(days=30)).isoformat()
+        client = self._make_client(_clob_response(
+            condition_id="0xABC", closed=True, active=True,
+            end_date_iso=future,
+            tokens=[
+                {"outcome": "Yes", "price": 0.0, "winner": False},
+                {"outcome": "No", "price": 1.0, "winner": True},
+            ],
+        ))
+        result = client.get_market_resolution("0xABC")
+        assert result == {"resolved": False}
+
+    def test_fallback_to_price_when_no_winner(self):
+        """closed=True, no winner flag, but Yes price > 0.9 → YES."""
+        client = self._make_client(_clob_response(
+            condition_id="0xABC", closed=True, active=True,
+            end_date_iso="2020-01-01T00:00:00Z",
+            tokens=[
+                {"outcome": "Yes", "price": 0.95, "winner": False},
+                {"outcome": "No", "price": 0.05, "winner": False},
+            ],
+        ))
+        result = client.get_market_resolution("0xABC")
+        assert result == {"resolved": True, "outcome": "YES"}
+
+    def test_fallback_price_no_wins(self):
+        """closed=True, no winner, No price > 0.9 → NO."""
+        client = self._make_client(_clob_response(
+            condition_id="0xABC", closed=True, active=True,
+            end_date_iso="2020-01-01T00:00:00Z",
+            tokens=[
+                {"outcome": "Yes", "price": 0.02, "winner": False},
+                {"outcome": "No", "price": 0.98, "winner": False},
+            ],
+        ))
+        result = client.get_market_resolution("0xABC")
+        assert result == {"resolved": True, "outcome": "NO"}
+
+    def test_ambiguous_prices_returns_none(self):
+        """closed=True but prices are 0.5/0.5 and no winner → None."""
+        client = self._make_client(_clob_response(
+            condition_id="0xABC", closed=True, active=True,
+            end_date_iso="2020-01-01T00:00:00Z",
+            tokens=[
+                {"outcome": "Yes", "price": 0.5, "winner": False},
+                {"outcome": "No", "price": 0.5, "winner": False},
+            ],
+        ))
+        result = client.get_market_resolution("0xABC")
+        assert result is None
+
+    def test_api_error_returns_none(self):
+        """HTTP error → None."""
+        client = self._make_client({}, status_code=500)
+        result = client.get_market_resolution("0xABC")
+        assert result is None
+
+    def test_empty_tokens_closed_returns_none(self):
+        """closed=True but no tokens at all → None."""
+        client = self._make_client(_clob_response(
+            condition_id="0xABC", closed=True, active=True,
+            end_date_iso="2020-01-01T00:00:00Z",
+            tokens=[],
+        ))
+        result = client.get_market_resolution("0xABC")
+        assert result is None
