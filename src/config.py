@@ -625,6 +625,7 @@ SCAN_PROFILES: dict = {
         "odds_min": ODDS_MIN,                        # 0.05
         "odds_max": ODDS_MAX,                        # 0.55
         "max_markets": MARKET_SCAN_CAP,              # 100
+        "lookback_minutes": SCAN_LOOKBACK_MINUTES,   # 35
         "categories": MARKET_CATEGORIES,             # politics, economics, geopolitics
         "relevant_categories": MARKET_RELEVANT_CATEGORIES,
         "extra_blacklist": [],
@@ -634,6 +635,7 @@ SCAN_PROFILES: dict = {
         "odds_min": 0.05,
         "odds_max": 0.85,
         "max_markets": None,                         # no cap
+        "lookback_minutes": 1440,                    # 24 hours
         "categories": MARKET_CATEGORIES + ["science"],
         "relevant_categories": DEEP_RELEVANT_CATEGORIES,
         "extra_blacklist": DEEP_EXTRA_BLACKLIST,

@@ -416,6 +416,7 @@ async def _process_markets_deep(
     db,
     counters,
     chain_client,
+    lookback_minutes: int,
 ) -> tuple[list[tuple[Alert, bool]], list[str]]:
     """Process all markets with rate-limited parallelism.
 
@@ -443,6 +444,7 @@ async def _process_markets_deep(
             counters=counters,
             excluded_senders=set(),
             chain_client=chain_client,
+            lookback_minutes=lookback_minutes,
         )
 
     async def process_one(market):
@@ -507,7 +509,11 @@ async def _process_markets_deep(
     return collected, errors
 
 
-def run_scan(mode: str = "quick", dry_run: bool = False) -> None:
+def run_scan(
+    mode: str = "quick",
+    dry_run: bool = False,
+    lookback_override: int | None = None,
+) -> None:
     """Execute a single scan cycle.
 
     Args:
@@ -515,6 +521,7 @@ def run_scan(mode: str = "quick", dry_run: bool = False) -> None:
               global timeout, 10x parallel).
         dry_run: If True, run full pipeline but skip all DB writes and
                  Telegram/X publishing. Logs what would have been done.
+        lookback_override: If set, override the profile's lookback_minutes.
     """
     # Suppress noisy HTTP client logging
     logging.getLogger("httpx").setLevel(logging.WARNING)
@@ -560,12 +567,16 @@ def run_scan(mode: str = "quick", dry_run: bool = False) -> None:
     try:
         # ── Step 2: Fetch active markets ─────────────────────
         profile = config.SCAN_PROFILES[mode]
+        lookback_minutes = lookback_override or profile["lookback_minutes"]
         raw_markets = pm_client.get_active_markets(
             categories=profile["categories"],
         )
         markets = _filter_markets(raw_markets, mode=mode)
         scan.markets_scanned = len(markets)
-        logger.info("Fetched %d markets (%d after filtering)", len(raw_markets), len(markets))
+        logger.info(
+            "Fetched %d markets (%d after filtering), lookback=%dmin",
+            len(raw_markets), len(markets), lookback_minutes,
+        )
 
         if not markets:
             logger.warning("No active markets found, ending scan")
@@ -608,6 +619,7 @@ def run_scan(mode: str = "quick", dry_run: bool = False) -> None:
                     db=db,
                     counters=counters,
                     chain_client=chain_client,
+                    lookback_minutes=lookback_minutes,
                 )
             )
             errors.extend(deep_errors)
@@ -645,6 +657,7 @@ def run_scan(mode: str = "quick", dry_run: bool = False) -> None:
                         counters=counters,
                         excluded_senders=excluded_senders,
                         chain_client=chain_client,
+                        lookback_minutes=lookback_minutes,
                     )
 
                     # Update sender_market_count with senders seen in this market
@@ -835,6 +848,7 @@ def _process_market(
     counters: dict,
     excluded_senders: set[str] | None = None,
     chain_client: BlockchainClient | None = None,
+    lookback_minutes: int | None = None,
 ) -> tuple[Alert, bool] | None:
     """Process a single market through the full analysis pipeline.
 
@@ -846,7 +860,7 @@ def _process_market(
     # ── 4a. Fetch trades ─────────────────────────────────────
     trades = pm_client.get_recent_trades(
         market_id=market.market_id,
-        minutes=config.SCAN_LOOKBACK_MINUTES,
+        minutes=lookback_minutes or config.SCAN_LOOKBACK_MINUTES,
         min_amount=config.MIN_TX_AMOUNT,
     )
     counters["total_trades"] += len(trades)
@@ -1320,5 +1334,12 @@ if __name__ == "__main__":
         action="store_true",
         help="Run full pipeline but don't publish to Telegram/X or write alerts to Supabase",
     )
+    parser.add_argument(
+        "--lookback",
+        type=int,
+        default=None,
+        metavar="MINUTES",
+        help="Override trade lookback window (default: 35min quick, 1440min deep)",
+    )
     args = parser.parse_args()
-    run_scan(mode=args.mode, dry_run=args.dry_run)
+    run_scan(mode=args.mode, dry_run=args.dry_run, lookback_override=args.lookback)
