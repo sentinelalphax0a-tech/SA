@@ -1,5 +1,5 @@
 """
-Whale Monitor — Active monitoring of wallets from 4-5 star alerts.
+Whale Monitor — Active monitoring of wallets from 3-5 star alerts.
 
 Runs every 6 hours (after tracker + notifier) to detect:
   A. Full exit: wallet sold entire position
@@ -8,12 +8,16 @@ Runs every 6 hours (after tracker + notifier) to detect:
   D. New market entry: same wallet appeared in a different alert
 
 Publishes formatted updates to Telegram.
+Also persists sell events as metadata (Sell Watch) without altering star levels.
 """
 
 import logging
 from datetime import datetime, timedelta, timezone
 
 from dateutil import parser as dt_parser
+
+from src import config
+from src.database.models import SellEvent
 
 logger = logging.getLogger(__name__)
 
@@ -22,14 +26,15 @@ LOOKBACK_MINUTES = 6 * 60  # 6 hours — matches tracker cycle
 
 
 class WhaleMonitor:
-    """Monitors wallets from 4-5 star alerts for new activity."""
+    """Monitors wallets from 3-5 star alerts for new activity."""
 
-    STAR_THRESHOLD = 4
+    STAR_THRESHOLD = config.SELL_WATCH_MIN_STARS
 
-    def __init__(self, db, polymarket, telegram) -> None:
+    def __init__(self, db, polymarket, telegram, formatter=None) -> None:
         self.db = db
         self.pm = polymarket
         self.telegram = telegram
+        self.formatter = formatter
 
     def run(self) -> int:
         """Execute the full whale monitoring cycle.
@@ -58,6 +63,11 @@ class WhaleMonitor:
                             alert["id"], event["type"], address
                         ):
                             continue
+
+                        # Sell Watch: persist sell metadata (no star changes)
+                        if event["type"] in ("FULL_EXIT", "PARTIAL_EXIT"):
+                            self._process_sell_event(alert, wallet, event)
+
                         self._send_whale_update(alert, wallet, event)
                         self._log_notification(
                             alert["id"], event["type"], address, event
@@ -323,6 +333,107 @@ class WhaleMonitor:
         lines.append("\u2501" * 32)
 
         return "\n".join(lines)
+
+    # ── Sell Watch — Metadata Persistence ────────────────────
+
+    def _process_sell_event(
+        self, alert: dict, wallet: dict, event: dict
+    ) -> None:
+        """Persist a sell event as metadata and optionally notify via Telegram.
+
+        Stars are NEVER modified. This is informational metadata only.
+        """
+        position_amount = wallet.get("total_amount", 0)
+        if position_amount <= 0:
+            return
+
+        # Calculate sell_pct
+        if event["type"] == "FULL_EXIT":
+            sell_pct = event.get("amount_sold", 0) / position_amount
+        else:
+            sell_pct = event.get("pct_sold", 0) / 100.0
+
+        # Check minimum sell threshold
+        if sell_pct < config.SELL_WATCH_MIN_SELL_PCT:
+            return
+
+        # Check cooldown (reuse whale notification dedup with SELL_EVENT type)
+        alert_id = alert.get("id")
+        address = wallet.get("address", "")
+        if self._already_notified(alert_id, "SELL_EVENT", address):
+            return
+
+        # Calculate held_hours
+        held_hours = self._calc_held_hours(alert)
+
+        # Build SellEvent
+        entry_price = wallet.get(
+            "avg_entry_price", alert.get("odds_at_alert")
+        )
+        sell_event = SellEvent(
+            alert_id=alert_id,
+            wallet_address=address,
+            sell_amount=event.get("amount_sold", 0),
+            sell_pct=sell_pct,
+            event_type=event["type"],
+            sell_price=event.get("sell_price"),
+            original_entry_price=entry_price,
+            position_remaining_pct=max(0.0, 1.0 - sell_pct),
+            pnl_pct=event.get("pnl_pct"),
+            held_hours=held_hours,
+        )
+
+        # Persist sell event
+        try:
+            self.db.insert_sell_event(sell_event)
+        except Exception as e:
+            logger.error("Failed to persist sell event for alert #%s: %s", alert_id, e)
+
+        # Update alert sell metadata (accumulate total_sold_pct)
+        try:
+            current_sold = alert.get("total_sold_pct", 0) or 0
+            new_total = min(1.0, current_sold + sell_pct)
+            self.db.update_alert_sell_metadata(alert_id, new_total)
+        except Exception as e:
+            logger.error("Failed to update alert sell metadata #%s: %s", alert_id, e)
+
+        # Log as SELL_EVENT for cooldown dedup
+        try:
+            self.db.log_whale_notification(
+                alert_id=alert_id,
+                event_type="SELL_EVENT",
+                wallet_address=address,
+                details={"sell_pct": sell_pct, "event_type": event["type"]},
+            )
+        except Exception as e:
+            logger.debug("Failed to log sell event notification: %s", e)
+
+        # Telegram notification only for high-star alerts
+        star_level = alert.get("star_level") or 0
+        if star_level >= config.SELL_WATCH_NOTIFY_MIN_STARS and self.formatter:
+            try:
+                held_str = self._held_duration(alert)
+                text = self.formatter.format_sell_watch(alert, sell_event, held_str)
+                self.telegram.send_message(text, parse_mode="")
+            except Exception as e:
+                logger.error("Failed to send sell watch notification: %s", e)
+
+    def _calc_held_hours(self, alert: dict) -> float | None:
+        """Calculate hours held from alert creation to now."""
+        created = alert.get("created_at")
+        if not created:
+            return None
+        try:
+            if isinstance(created, str):
+                dt = dt_parser.parse(created)
+            else:
+                dt = created
+            if dt.tzinfo is None:
+                dt = dt.replace(tzinfo=timezone.utc)
+            delta = datetime.now(timezone.utc) - dt
+            return round(delta.total_seconds() / 3600, 1)
+        except (TypeError, ValueError):
+            return None
 
     # ── Dedup & Logging ──────────────────────────────────────
 

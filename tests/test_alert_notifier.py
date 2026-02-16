@@ -402,3 +402,19 @@ class TestResolutionSummary:
 
         assert counts["resolutions"] == 0
         telegram.send_message.assert_not_called()
+
+
+# ── Missing Market ──────────────────────────────────────
+
+
+class TestMissingMarket:
+    def test_hours_to_resolution_missing_market(self):
+        """Market not found in DB → _hours_to_resolution returns None."""
+        notifier, db, telegram = _make_notifier()
+
+        db.get_market.return_value = None
+
+        alert = _pending_alert(market_id="nonexistent_market")
+        result = notifier._hours_to_resolution(alert)
+
+        assert result is None

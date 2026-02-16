@@ -43,11 +43,25 @@ def fetch_data(db: SupabaseClient) -> dict:
         .execute()
     )
 
+    # Sell events (recent, for sell activity section)
+    try:
+        sell_events_resp = (
+            db.client.table("alert_sell_events")
+            .select("*")
+            .order("detected_at", desc=True)
+            .limit(50)
+            .execute()
+        )
+        sell_events = sell_events_resp.data or []
+    except Exception:
+        sell_events = []
+
     markets_list = markets_resp.data or []
     return {
         "alerts": alerts_resp.data or [],
         "markets": {m["market_id"]: m for m in markets_list},
         "last_scan": (scans_resp.data or [{}])[0] if scans_resp.data else {},
+        "sell_events": sell_events,
     }
 
 
@@ -191,6 +205,14 @@ def enrich_alerts(alerts: list[dict], markets: dict) -> list[dict]:
         # Polymarket URL
         slug = market.get("slug") or a.get("market_id", "")
         a["polymarket_url"] = f"https://polymarket.com/event/{slug}"
+
+        # Sell Watch metadata
+        total_sold = a.get("total_sold_pct") or 0
+        a["has_sells"] = total_sold > 0
+        if total_sold > 0:
+            a["sold_pct_display"] = f"{total_sold * 100:.0f}% sold"
+        else:
+            a["sold_pct_display"] = None
 
         enriched.append(a)
 
@@ -387,11 +409,17 @@ def compute_stats(alerts: list[dict], markets: dict) -> dict:
             }
         )
 
+    # Sell Watch stats
+    alerts_with_sells = sum(
+        1 for a in alerts if (a.get("total_sold_pct") or 0) > 0
+    )
+
     return {
         "total_alerts": total,
         "active_alerts": active,
         "resolved_alerts": resolved,
         "accuracy_3plus": accuracy_3plus,
+        "alerts_with_sells": alerts_with_sells,
         "by_star": by_star,
         "alerts_per_day": alerts_per_day,
         "accuracy_over_time": accuracy_over_time,
@@ -439,6 +467,7 @@ def generate(output_dir: Path | None = None) -> Path:
     enriched = enrich_alerts(data["alerts"], data["markets"])
     stats = compute_stats(data["alerts"], data["markets"])
     stats["last_scan"] = data["last_scan"]
+    stats["sell_events"] = data.get("sell_events", [])
 
     template = TEMPLATE_PATH.read_text(encoding="utf-8")
 

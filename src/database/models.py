@@ -98,6 +98,8 @@ class Alert:
     deduplicated: bool = False
     outcome: str = "pending"
     resolved_at: datetime | None = None
+    total_sold_pct: float = 0.0                  # cumulative % sold across all wallets
+    last_sell_detected_at: datetime | None = None
     created_at: datetime = field(default_factory=datetime.utcnow)
 
 
@@ -305,6 +307,28 @@ class WalletPosition:
     alert_id: int | None = None
     created_at: datetime = field(default_factory=datetime.utcnow)
     updated_at: datetime = field(default_factory=datetime.utcnow)
+
+
+# ============================================================
+# SELL EVENT (metadata-only position exit tracking)
+# ============================================================
+
+@dataclass
+class SellEvent:
+    """Records a sell detected for a monitored alert wallet."""
+    alert_id: int
+    wallet_address: str
+    sell_amount: float
+    sell_pct: float                         # fraction of original position sold
+    event_type: str                         # "FULL_EXIT" or "PARTIAL_EXIT"
+    id: int | None = None
+    sell_price: float | None = None
+    original_entry_price: float | None = None
+    position_remaining_pct: float = 0.0
+    pnl_pct: float | None = None
+    held_hours: float | None = None
+    detected_at: datetime = field(default_factory=datetime.utcnow)
+    sell_timestamp: datetime | None = None
 
 
 # ============================================================

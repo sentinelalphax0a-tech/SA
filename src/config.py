@@ -380,6 +380,12 @@ SCALPER_SERIAL_MIN_MARKETS: int = 3      # N07b: flip in 3+ markets
 SELL_COORDINATED_WINDOW_HOURS: int = 4   # 2+ wallets sell within 4h = coordinated
 SELL_COORDINATED_MIN_WALLETS: int = 2
 
+# ── Sell Watch — Metadata-only position exit tracking ──────
+SELL_WATCH_MIN_STARS: int = 3           # Monitor 3★+ alerts
+SELL_WATCH_MIN_SELL_PCT: float = 0.20   # Ignore sells < 20% of position
+SELL_WATCH_COOLDOWN_HOURS: int = 6      # Max 1 sell-event per alert per 6h
+SELL_WATCH_NOTIFY_MIN_STARS: int = 4    # Telegram notification only for 4-5★
+
 # Anti-bot evasion threshold (N08)
 ANTI_BOT_AMOUNT_CV_MAX: float = 0.10     # N08: coefficient of variation of amounts < 10%
 

@@ -187,11 +187,11 @@ class TestDetectNewMarket:
 
 
 class TestStarFiltering:
-    def test_only_monitors_4plus_stars(self):
-        """WhaleMonitor only processes alerts returned by get_high_star_alerts."""
+    def test_only_monitors_3plus_stars(self):
+        """WhaleMonitor monitors 3+ star alerts (Sell Watch threshold)."""
         monitor, db, pm, telegram = _make_monitor()
 
-        # DB returns only 4+ star alerts (the monitor asks for min_stars=4)
+        # DB returns 3+ star alerts (the monitor asks for min_stars=3)
         alert_4star = _whale_alert(id=1, star_level=4)
         alert_5star = _whale_alert(id=2, star_level=5)
         db.get_high_star_alerts.return_value = [alert_4star, alert_5star]
@@ -203,8 +203,8 @@ class TestStarFiltering:
 
         monitor.run()
 
-        # Verify get_high_star_alerts was called with min_stars=4
-        db.get_high_star_alerts.assert_called_once_with(min_stars=4)
+        # Verify get_high_star_alerts was called with min_stars=3
+        db.get_high_star_alerts.assert_called_once_with(min_stars=3)
 
 
 # ── Deduplication ────────────────────────────────────────

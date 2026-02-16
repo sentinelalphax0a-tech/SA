@@ -428,6 +428,66 @@ class AlertFormatter:
 
         return "\n".join(lines)
 
+    # ── Sell Watch (metadata-only, no star changes) ─────────
+
+    def format_sell_watch(
+        self, alert: dict, sell_event, held_str: str | None
+    ) -> str:
+        """Format a sell watch notification for Telegram.
+
+        This is informational only — stars are never modified.
+        """
+        alert_id = alert.get("id", "?")
+        star = alert.get("star_level") or 0
+        question = alert.get("market_question", "?")
+        direction = alert.get("direction") or "?"
+
+        event_type = sell_event.event_type
+        sell_amount = sell_event.sell_amount
+        sell_pct = sell_event.sell_pct
+        sell_price = sell_event.sell_price
+        entry_price = sell_event.original_entry_price
+        pnl_pct = sell_event.pnl_pct
+
+        star_emoji = self._star_emoji(star)
+
+        if event_type == "FULL_EXIT":
+            event_label = "\U0001f534 FULL EXIT"
+        else:
+            event_label = "\U0001f7e1 PARTIAL EXIT"
+
+        lines = [
+            "\U0001f4ca SELL WATCH \u2014 Sentinel Alpha",
+            "\u2501" * 32,
+            f"\U0001f4cc Alert #{alert_id} ({star}\u2605)",
+            f'\U0001f4ca "{question}"',
+            f"\U0001f4c8 Direction: {direction}",
+            "",
+            f"{event_label}: ${sell_amount:,.0f} ({sell_pct * 100:.0f}% of position)",
+        ]
+
+        if sell_price is not None:
+            lines.append(f"   Sell price: {sell_price:.2f}")
+
+        if entry_price is not None:
+            total_amount = alert.get("total_amount", sell_amount)
+            lines.append(f"   Entry: ${total_amount:,.0f} @ {entry_price:.2f}")
+
+        if pnl_pct is not None:
+            if pnl_pct >= 0:
+                lines.append(f"   P&L: +{pnl_pct:.1f}%")
+            else:
+                lines.append(f"   P&L: {pnl_pct:.1f}%")
+
+        if held_str:
+            lines.append(f"   Held: {held_str}")
+
+        lines.append("")
+        lines.append("\u2139\ufe0f Score preserved \u2014 informational update only.")
+        lines.append("\u2501" * 32)
+
+        return "\n".join(lines)
+
     # ── Alert Update (consolidation) ─────────────────────────
 
     def format_alert_update(

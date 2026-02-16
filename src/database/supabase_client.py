@@ -20,6 +20,7 @@ from src.database.models import (
     WalletFunding,
     WalletPosition,
     WalletCategory,
+    SellEvent,
     Scan,
     WeeklyReport,
     SmartMoneyLeaderboard,
@@ -154,7 +155,7 @@ class SupabaseClient:
             self.client.table("markets")
             .select("*")
             .eq("market_id", market_id)
-            .single()
+            .maybe_single()
             .execute()
         )
         return resp.data
@@ -686,6 +687,60 @@ class SupabaseClient:
                     result.append(row)
                     break
         return result
+
+    # ── Sell Events (Sell Watch) ─────────────────────────
+
+    def insert_sell_event(self, event: SellEvent) -> int | None:
+        """Insert a sell event into alert_sell_events. Returns the row ID."""
+        data = _serialize(asdict(event))
+        data.pop("id", None)
+        try:
+            resp = self.client.table("alert_sell_events").insert(data).execute()
+            if resp.data:
+                return resp.data[0].get("id")
+        except Exception as e:
+            logger.error("Failed to insert sell event for alert #%s: %s", event.alert_id, e)
+        return None
+
+    def get_sell_events_for_alert(self, alert_id: int) -> list[dict]:
+        """Fetch all sell events for a given alert."""
+        resp = (
+            self.client.table("alert_sell_events")
+            .select("*")
+            .eq("alert_id", alert_id)
+            .order("detected_at", desc=True)
+            .execute()
+        )
+        return resp.data or []
+
+    def get_recent_sell_events(self, hours: int = 168) -> list[dict]:
+        """Fetch recent sell events (default 7 days) for dashboard."""
+        from datetime import timedelta, timezone
+
+        cutoff = (
+            datetime.now(timezone.utc) - timedelta(hours=hours)
+        ).isoformat()
+        resp = (
+            self.client.table("alert_sell_events")
+            .select("*")
+            .gte("detected_at", cutoff)
+            .order("detected_at", desc=True)
+            .limit(50)
+            .execute()
+        )
+        return resp.data or []
+
+    def update_alert_sell_metadata(
+        self, alert_id: int, total_sold_pct: float
+    ) -> None:
+        """Update sell metadata on the alert row. Does NOT touch star_level."""
+        from datetime import timezone
+
+        now = datetime.now(timezone.utc).isoformat()
+        self.client.table("alerts").update({
+            "total_sold_pct": total_sold_pct,
+            "last_sell_detected_at": now,
+        }).eq("id", alert_id).execute()
 
     # ── Utility ────────────────────────────────────────────
 
