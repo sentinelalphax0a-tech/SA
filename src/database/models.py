@@ -100,6 +100,11 @@ class Alert:
     resolved_at: datetime | None = None
     total_sold_pct: float = 0.0                  # cumulative % sold across all wallets
     last_sell_detected_at: datetime | None = None
+    # ── Multi-signal grouping ──
+    multi_signal: bool = False              # True when 2+ independent groups bet same direction
+    is_secondary: bool = False              # True for non-primary alerts in a group
+    alert_group_id: str | None = None       # Shared UUID across alerts from same market scan
+    secondary_count: int = 0                # Number of secondary alerts (set on primary)
     created_at: datetime = field(default_factory=datetime.utcnow)
 
 

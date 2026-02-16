@@ -594,3 +594,98 @@ class TestDetectFundingLinks:
         detector = ConfluenceDetector(FakeDB(funding))
         links = detector.detect_funding_links(["0x01", "0x02"])
         assert len(links) == 0
+
+
+# ── group_and_detect ───────────────────────────────────────
+
+
+class TestGroupAndDetect:
+    def test_solo_wallets_each_own_group(self):
+        """2 wallets with different senders → 2 groups."""
+        funding = {
+            "0x01": [_funding_row(SENDER_A)],
+            "0x02": [_funding_row(SENDER_B)],
+        }
+        detector = ConfluenceDetector(FakeDB(funding))
+        results = detector.group_and_detect("mkt1", "YES", [
+            _wallet("0x01", "YES"), _wallet("0x02", "YES"),
+        ])
+        assert len(results) == 2
+        # Each group has 1 wallet
+        sizes = sorted(len(g) for g, _ in results)
+        assert sizes == [1, 1]
+
+    def test_shared_sender_merges(self):
+        """2 wallets sharing a sender → 1 group."""
+        funding = {
+            "0x01": [_funding_row(SENDER_A)],
+            "0x02": [_funding_row(SENDER_A)],
+        }
+        detector = ConfluenceDetector(FakeDB(funding))
+        results = detector.group_and_detect("mkt1", "YES", [
+            _wallet("0x01", "YES"), _wallet("0x02", "YES"),
+        ])
+        assert len(results) == 1
+        assert len(results[0][0]) == 2
+
+    def test_mixed_groups(self):
+        """3 wallets: A+B share sender, C solo → 2 groups."""
+        funding = {
+            "0x01": [_funding_row(SENDER_A)],
+            "0x02": [_funding_row(SENDER_A)],
+            "0x03": [_funding_row(SENDER_B)],
+        }
+        detector = ConfluenceDetector(FakeDB(funding))
+        results = detector.group_and_detect("mkt1", "YES", [
+            _wallet("0x01", "YES"),
+            _wallet("0x02", "YES"),
+            _wallet("0x03", "YES"),
+        ])
+        assert len(results) == 2
+        sizes = sorted(len(g) for g, _ in results)
+        assert sizes == [1, 2]
+
+    def test_c_filters_scoped_per_group(self):
+        """C01 should count only wallets within the group, not globally."""
+        funding = {
+            "0x01": [_funding_row(SENDER_A)],
+            "0x02": [_funding_row(SENDER_A)],
+            "0x03": [_funding_row(SENDER_A)],
+            "0x04": [_funding_row(SENDER_B)],
+        }
+        wallets = [
+            _wallet("0x01", "YES"),
+            _wallet("0x02", "YES"),
+            _wallet("0x03", "YES"),
+            _wallet("0x04", "YES"),
+        ]
+        detector = ConfluenceDetector(FakeDB(funding))
+        results = detector.group_and_detect("mkt1", "YES", wallets)
+        assert len(results) == 2
+
+        # Find the group with 3 wallets — should have C01
+        for group_wallets, filters in results:
+            ids = {f.filter_id for f in filters}
+            if len(group_wallets) == 3:
+                assert "C01" in ids
+            elif len(group_wallets) == 1:
+                assert "C01" not in ids
+
+    def test_empty_wallets(self):
+        """Empty wallets → empty result."""
+        detector = ConfluenceDetector(FakeDB())
+        results = detector.group_and_detect("mkt1", "YES", [])
+        assert results == []
+
+    def test_last_senders_seen_populated(self):
+        """last_senders_seen should be set after group_and_detect."""
+        funding = {
+            "0x01": [_funding_row(SENDER_A)],
+            "0x02": [_funding_row(SENDER_B)],
+        }
+        detector = ConfluenceDetector(FakeDB(funding))
+        detector.group_and_detect("mkt1", "YES", [
+            _wallet("0x01", "YES"), _wallet("0x02", "YES"),
+        ])
+        assert SENDER_A in detector.last_senders_seen
+        assert SENDER_B in detector.last_senders_seen

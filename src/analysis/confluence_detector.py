@@ -438,6 +438,92 @@ class ConfluenceDetector:
 
         return []
 
+    # ── Union-find grouping ──────────────────────────────────
+
+    @staticmethod
+    def _union_find_groups(
+        wallets: list[dict],
+        sender_to_wallets: dict[str, set[str]],
+    ) -> list[list[dict]]:
+        """Group wallets by shared funding senders using union-find."""
+        addr_to_idx = {w["address"]: i for i, w in enumerate(wallets)}
+        parent = list(range(len(wallets)))
+
+        def find(x):
+            while parent[x] != x:
+                parent[x] = parent[parent[x]]
+                x = parent[x]
+            return x
+
+        def union(a, b):
+            ra, rb = find(a), find(b)
+            if ra != rb:
+                parent[ra] = rb
+
+        # Union wallets that share a sender
+        for sender, funded_addrs in sender_to_wallets.items():
+            idxs = [addr_to_idx[a] for a in funded_addrs if a in addr_to_idx]
+            for i in range(1, len(idxs)):
+                union(idxs[0], idxs[i])
+
+        # Collect groups
+        groups_map: dict[int, list[dict]] = defaultdict(list)
+        for i, w in enumerate(wallets):
+            groups_map[find(i)].append(w)
+
+        return list(groups_map.values())
+
+    # ── Group-aware entry point ────────────────────────────
+
+    def group_and_detect(
+        self,
+        market_id: str,
+        direction: str,
+        wallets_with_scores: list[dict],
+        excluded_senders: set[str] | None = None,
+    ) -> list[tuple[list[dict], list[FilterResult]]]:
+        """Group wallets by funding relationships and detect confluence per group."""
+        if not wallets_with_scores:
+            self.last_senders_seen = set()
+            return []
+
+        # Fetch funding & build indices (same as detect())
+        funding_map = self._fetch_funding_map(wallets_with_scores)
+        raw_sender_to_wallets = self._build_sender_index(funding_map)
+        self.last_senders_seen = set(raw_sender_to_wallets.keys())
+
+        all_excluded = self._build_default_excluded()
+        if excluded_senders:
+            all_excluded.update(excluded_senders)
+        sender_to_wallets = {
+            s: ws for s, ws in raw_sender_to_wallets.items()
+            if s.lower() not in all_excluded
+        }
+
+        # Group wallets
+        groups = self._union_find_groups(wallets_with_scores, sender_to_wallets)
+
+        # Run C filters per group
+        results: list[tuple[list[dict], list[FilterResult]]] = []
+        for group_wallets in groups:
+            group_addrs = {w["address"] for w in group_wallets}
+            # Scope sender index to this group
+            group_senders = {
+                s: (ws & group_addrs) for s, ws in sender_to_wallets.items()
+                if ws & group_addrs
+            }
+            group_funding = {a: funding_map[a] for a in group_addrs if a in funding_map}
+
+            filters: list[FilterResult] = []
+            filters.extend(self._check_direction_confluence(direction, group_wallets))
+            filters.extend(self._check_origin_layers(group_wallets, group_senders, group_funding))
+            filters.extend(self._check_temporal_funding(direction, group_wallets, group_funding))
+            filters.extend(self._check_similar_amounts(group_senders, group_funding))
+            filters.extend(self._check_distribution_network(group_wallets, group_senders))
+            results.append((group_wallets, filters))
+
+        return results
+
     # ── Timestamp helper ─────────────────────────────────────
 
     @staticmethod

@@ -87,6 +87,11 @@ class AlertFormatter:
                 f"\U0001f45b {alert.confluence_count} coordinated wallets"
             )
 
+        if getattr(alert, "multi_signal", False) and getattr(alert, "secondary_count", 0) > 0:
+            lines.append(
+                f"\U0001f4e1 Multi-signal: {alert.secondary_count + 1} independent group(s)"
+            )
+
         # Extra context line: time window + funding source
         context_parts = self._build_context_parts(alert)
         if context_parts:

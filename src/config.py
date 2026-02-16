@@ -351,6 +351,7 @@ FUNDING_TEMPORAL_MIN_WALLETS: int = 3     # C05: 3+ funded < 4h
 FUNDING_TEMPORAL_HOURS: int = 4
 FUNDING_SIMILAR_AMOUNT_TOLERANCE: float = 0.30  # C06: ±30%
 DISTRIBUTION_MIN_WALLETS: int = 3         # C07: 1 → 3+ wallets
+FUNDING_GROUPING_MIN_WALLETS: int = 2     # Min wallets to trigger funding fetch for grouping
 
 # Market thresholds
 VOLUME_ANOMALY_MULTIPLIER: float = 2.0    # M01: vol 24h > 2x avg 7d

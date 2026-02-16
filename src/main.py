@@ -456,9 +456,9 @@ async def _process_markets_deep(
                 result = await asyncio.to_thread(
                     _call_process_market, market,
                 )
-                if result is not None:
-                    collected.append(result)
-                    alert_count += 1
+                if result:
+                    collected.extend(result)
+                    alert_count += len(result)
                 return  # success
             except Exception as e:
                 if _is_rate_limited(e) and attempt < len(_DEEP_RETRY_DELAYS):
@@ -664,8 +664,8 @@ def run_scan(
                     for sender in confluence_detector.last_senders_seen:
                         sender_market_count[sender].add(market.market_id)
 
-                    if result is not None:
-                        collected_alerts.append(result)
+                    if result:
+                        collected_alerts.extend(result)
                     logger.info(
                         "Market %d/%d done in %.1fs: %s",
                         markets_processed, len(markets),
@@ -687,6 +687,19 @@ def run_scan(
         # ── Step 8: Save + Publish ─────────────────────────────
         for alert, is_whale in collected_alerts:
             try:
+                # 8a-pre. Secondary alerts: insert to DB but don't publish
+                if alert.is_secondary:
+                    if not dry_run:
+                        alert_id = db.insert_alert(alert)
+                        alert.id = alert_id
+                    else:
+                        logger.info(
+                            "[DRY-RUN] Would insert secondary alert: %s",
+                            alert.market_question[:50] if alert.market_question else "",
+                        )
+                    counters["alerts_generated"] += 1
+                    continue
+
                 # 8a. Within-scan dedup: still insert, but skip publish
                 if alert.deduplicated:
                     if dry_run:
@@ -849,10 +862,10 @@ def _process_market(
     excluded_senders: set[str] | None = None,
     chain_client: BlockchainClient | None = None,
     lookback_minutes: int | None = None,
-) -> tuple[Alert, bool] | None:
+) -> list[tuple[Alert, bool]]:
     """Process a single market through the full analysis pipeline.
 
-    Returns (alert, is_whale) if an alert was generated, None otherwise.
+    Returns list of (alert, is_whale) tuples (one per independent group).
     """
     t_market_start = time.time()
     logger.debug("Processing market: %s", market.question[:60])
@@ -867,7 +880,7 @@ def _process_market(
 
     if not trades:
         logger.debug("  No trades in %s (%.1fs)", market.market_id[:12], time.time() - t_market_start)
-        return None
+        return []
 
     logger.debug("  %d trades in %s", len(trades), market.market_id[:12])
 
@@ -934,14 +947,14 @@ def _process_market(
             continue
 
     if not analyzed_wallets:
-        return None
+        return []
 
     # ── 4f. Filter wallets by dominant direction ───────────────
     direction, analyzed_wallets, wallet_filter_sets = _filter_wallets_by_direction(
         analyzed_wallets, wallet_filter_sets,
     )
     if not analyzed_wallets:
-        return None
+        return []
 
     # ── 5a. Market-level analysis ────────────────────────────
     market_filters: list[FilterResult] = []
@@ -950,24 +963,23 @@ def _process_market(
     except Exception as e:
         logger.error("Market analyzer failed for %s: %s", market.market_id[:12], e)
 
-    # ── 5b. Confluence detection ─────────────────────────────
+    # ── 5b. Group wallets & detect confluence per group ─────
     # `direction` was already set in step 4f (from analyzed wallets).
-    confluence_filters: list[FilterResult] = []
+    import uuid as _uuid
+
+    wallets_for_confluence = [
+        {"address": w["address"], "direction": w.get("direction", direction)}
+        for w in analyzed_wallets
+    ]
+
+    groups_with_filters: list[tuple[list[dict], list[FilterResult]]]
 
     try:
-        wallets_for_confluence = [
-            {"address": w["address"], "direction": w.get("direction", direction)}
-            for w in analyzed_wallets
-        ]
-
-        # FIX: Ensure funding is fetched for all wallets when 3+ share a
-        # direction.  wallet_analyzer only fetches funding when basic_score
-        # meets a threshold, leaving most wallets without funding data.
-        # Confluence filters C03-C07 need that data to work.
+        # Ensure funding is fetched for wallets when 2+ share a direction.
         same_dir_count = sum(
             1 for w in wallets_for_confluence if w["direction"] == direction
         )
-        if same_dir_count >= config.CONFLUENCE_BASIC_MIN_WALLETS and chain_client is not None:
+        if same_dir_count >= config.FUNDING_GROUPING_MIN_WALLETS and chain_client is not None:
             for w in wallets_for_confluence:
                 addr = w["address"]
                 existing = db.get_funding_sources(addr)
@@ -981,7 +993,7 @@ def _process_market(
                     except Exception as e:
                         logger.debug("Confluence funding fetch for %s: %s", addr[:10], e)
 
-        confluence_filters = confluence_detector.detect(
+        groups_with_filters = confluence_detector.group_and_detect(
             market_id=market.market_id,
             direction=direction,
             wallets_with_scores=wallets_for_confluence,
@@ -989,93 +1001,131 @@ def _process_market(
         )
     except Exception as e:
         logger.error("Confluence detection failed for %s: %s", market.market_id[:12], e)
+        # Fallback: each wallet is its own group, no C filters
+        groups_with_filters = [([w_dict], []) for w_dict in wallets_for_confluence]
 
-    # ── 5c. Score (BEST wallet + market/confluence bonuses) ──
-    # Score = best single wallet's filters + market + confluence.
-    # NOT the sum of all wallets' filters (that inflates scores).
-    if not wallet_filter_sets and not market_filters and not confluence_filters:
-        return None
+    # Build address → (wallet_data, filters) lookup
+    wallet_lookup: dict[str, tuple[dict, list[FilterResult]]] = {}
+    for wd, wf in zip(analyzed_wallets, wallet_filter_sets):
+        wallet_lookup[wd["address"]] = (wd, wf)
 
-    total_amount = sum(w.get("total_amount", 0) for w in analyzed_wallets)
-    max_distinct = max((w.get("distinct_markets", 0) for w in analyzed_wallets), default=0)
+    # ── 5c. Score each group independently ────────────────────
+    alert_group_id = str(_uuid.uuid4())
+    alert_candidates: list[tuple[Alert, bool, int]] = []  # (alert, is_whale, score)
 
-    # Find the best wallet by raw filter points
-    best_wallet_filters: list[FilterResult] = []
-    best_wallet_score = -1
-    for wf in wallet_filter_sets:
-        raw = sum(f.points for f in wf)
-        if raw > best_wallet_score:
-            best_wallet_score = raw
-            best_wallet_filters = wf
+    for group_wallets, confluence_filters in groups_with_filters:
+        # Match group addresses to analyzed wallets
+        group_analyzed: list[dict] = []
+        group_filter_sets: list[list[FilterResult]] = []
+        for gw in group_wallets:
+            addr = gw["address"]
+            if addr in wallet_lookup:
+                wd, wf = wallet_lookup[addr]
+                group_analyzed.append(wd)
+                group_filter_sets.append(wf)
 
-    all_filters = best_wallet_filters + market_filters + confluence_filters
-    if not all_filters:
-        return None
+        if not group_analyzed and not market_filters and not confluence_filters:
+            continue
 
-    scoring_result = calculate_score(
-        all_filters,
-        total_amount=total_amount,
-        wallet_market_count=max_distinct or None,
-    )
+        # Best wallet in this group
+        best_wallet_filters: list[FilterResult] = []
+        best_wallet_score = -1
+        for wf in group_filter_sets:
+            raw = sum(f.points for f in wf)
+            if raw > best_wallet_score:
+                best_wallet_score = raw
+                best_wallet_filters = wf
 
-    # ── Detailed filter log for debugging ────────────────────
-    filter_lines = []
-    for f in scoring_result.filters_triggered:
-        detail = f" — {f.details}" if f.details else ""
-        filter_lines.append(f"  {f.filter_id}: {f.points:+d} pts ({f.filter_name}){detail}")
-    logger.info(
-        "Score breakdown for %s | score=%d (raw=%d × %.2f):\n%s",
-        market.question[:50],
-        scoring_result.score_final,
-        scoring_result.score_raw,
-        scoring_result.multiplier,
-        "\n".join(filter_lines) if filter_lines else "  (no filters)",
-    )
+        all_filters = best_wallet_filters + market_filters + confluence_filters
+        if not all_filters:
+            continue
 
-    # ── 6. Odds range check ──────────────────────────────────
-    if not _is_in_odds_range(market.current_odds, scoring_result.score_final):
-        logger.debug(
-            "  Skipping: odds %.2f outside range for score %d",
-            market.current_odds or 0,
-            scoring_result.score_final,
+        group_amount = sum(w.get("total_amount", 0) for w in group_analyzed)
+        max_distinct = max((w.get("distinct_markets", 0) for w in group_analyzed), default=0)
+
+        scoring_result = calculate_score(
+            all_filters,
+            total_amount=group_amount,
+            wallet_market_count=max_distinct or None,
         )
-        return None
 
-    # ── 7. Generate alert ────────────────────────────────────
-    is_whale = _has_whale_entry(scoring_result.filters_triggered)
+        # ── Detailed filter log for debugging ────────────────
+        filter_lines = []
+        for f in scoring_result.filters_triggered:
+            detail = f" — {f.details}" if f.details else ""
+            filter_lines.append(f"  {f.filter_id}: {f.points:+d} pts ({f.filter_name}){detail}")
+        logger.info(
+            "Score breakdown for %s (group %d/%d) | score=%d (raw=%d × %.2f):\n%s",
+            market.question[:50],
+            len(alert_candidates) + 1,
+            len(groups_with_filters),
+            scoring_result.score_final,
+            scoring_result.score_raw,
+            scoring_result.multiplier,
+            "\n".join(filter_lines) if filter_lines else "  (no filters)",
+        )
 
-    # Determine confluence type from C filters
-    confluence_type = None
-    for f in confluence_filters:
-        if f.filter_id == "C07":
-            confluence_type = "distribution_network"
-            break
-        elif f.filter_id in ("C03a", "C03b", "C03c", "C03d"):
-            confluence_type = "shared_funding"
-        elif f.filter_id == "C05" and not confluence_type:
-            confluence_type = "exchange_funded"
+        # Odds range check
+        if not _is_in_odds_range(market.current_odds, scoring_result.score_final):
+            continue
 
-    alert = _build_alert(
-        market=market,
-        direction=direction,
-        scoring_result=scoring_result,
-        wallet_data=analyzed_wallets,
-        confluence_type=confluence_type,
-        is_whale=is_whale,
-    )
+        is_whale = _has_whale_entry(scoring_result.filters_triggered)
+
+        # Determine confluence type
+        confluence_type = None
+        for f in confluence_filters:
+            if f.filter_id == "C07":
+                confluence_type = "distribution_network"
+                break
+            elif f.filter_id in ("C03a", "C03b", "C03c", "C03d"):
+                confluence_type = "shared_funding"
+            elif f.filter_id == "C05" and not confluence_type:
+                confluence_type = "exchange_funded"
+
+        alert = _build_alert(
+            market=market,
+            direction=direction,
+            scoring_result=scoring_result,
+            wallet_data=group_analyzed,
+            confluence_type=confluence_type,
+            is_whale=is_whale,
+        )
+        alert.alert_group_id = alert_group_id
+        alert_candidates.append((alert, is_whale, scoring_result.score_final))
+
+    if not alert_candidates:
+        return []
+
+    # Sort by score descending — first is primary
+    alert_candidates.sort(key=lambda x: x[2], reverse=True)
+
+    # Mark primary/secondary
+    multi_signal = len(alert_candidates) > 1
+    results: list[tuple[Alert, bool]] = []
+    for i, (alert, is_whale, _score) in enumerate(alert_candidates):
+        alert.multi_signal = multi_signal
+        if i == 0:
+            alert.is_secondary = False
+            alert.secondary_count = len(alert_candidates) - 1
+        else:
+            alert.is_secondary = True
+            alert.secondary_count = 0
+        results.append((alert, is_whale))
 
     t_market_elapsed = time.time() - t_market_start
+    primary = results[0][0]
     logger.info(
-        "Alert candidate: %s %s | %d stars | score=%d | %s (%.1fs)",
+        "Alert candidate: %s %s | %d stars | score=%d | %s | groups=%d (%.1fs)",
         direction,
         market.question[:40],
-        scoring_result.star_level,
-        scoring_result.score_final,
-        alert.alert_type,
+        primary.star_level or 0,
+        primary.score,
+        primary.alert_type,
+        len(results),
         t_market_elapsed,
     )
 
-    return alert, is_whale
+    return results
 
 
 def _analyze_wallet(
