@@ -158,6 +158,8 @@ class SupabaseClient:
             .maybe_single()
             .execute()
         )
+        if resp is None or resp.data is None:
+            return None
         return resp.data
 
     def get_all_markets(self, limit: int = 1000) -> list[dict]:
