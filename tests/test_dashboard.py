@@ -376,3 +376,57 @@ class TestGenerate:
         # Star 1: no resolved, accuracy None
         assert stats["by_star"]["1"]["accuracy"] is None
         assert stats["by_star"]["1"]["pending"] == 1
+
+
+# ── Test: entry_price from wallet ────────────────────
+
+
+class TestEntryPrice:
+    def test_entry_price_no_direction(self):
+        """NO alert with avg_entry=0.85 → dashboard shows 0.85, not odds_at_alert."""
+        alerts = [_alert(
+            direction="NO",
+            odds_at_alert=0.15,  # raw YES odds
+            wallets=[{
+                "address": "0xAAAA",
+                "total_amount": 5000,
+                "trade_count": 2,
+                "time_span_hours": 1,
+                "avg_entry_price": 0.85,  # actual price paid for NO token
+                "trades": [],
+            }],
+        )]
+        result = enrich_alerts(alerts, {})
+        assert result[0]["entry_price"] == 0.85
+
+    def test_entry_price_yes_direction(self):
+        """YES alert → shows avg_entry_price from wallet."""
+        alerts = [_alert(
+            direction="YES",
+            odds_at_alert=0.35,
+            wallets=[{
+                "address": "0xBBBB",
+                "total_amount": 8000,
+                "trade_count": 3,
+                "time_span_hours": 2,
+                "avg_entry_price": 0.33,
+                "trades": [],
+            }],
+        )]
+        result = enrich_alerts(alerts, {})
+        assert result[0]["entry_price"] == 0.33
+
+    def test_entry_price_fallback_no_wallets(self):
+        """No wallets → falls back to odds_at_alert."""
+        alerts = [_alert(odds_at_alert=0.40, wallets=[])]
+        result = enrich_alerts(alerts, {})
+        assert result[0]["entry_price"] == 0.40
+
+    def test_entry_price_fallback_no_avg(self):
+        """Wallet exists but no avg_entry_price → falls back to odds_at_alert."""
+        alerts = [_alert(
+            odds_at_alert=0.40,
+            wallets=[{"address": "0xCCCC", "total_amount": 1000}],
+        )]
+        result = enrich_alerts(alerts, {})
+        assert result[0]["entry_price"] == 0.40

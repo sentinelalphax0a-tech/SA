@@ -145,6 +145,14 @@ def enrich_alerts(alerts: list[dict], markets: dict) -> list[dict]:
         market = markets.get(a.get("market_id", "")) or {}
         direction = (a.get("direction") or "YES").upper()
 
+        # Entry price: use wallet's avg_entry_price (direction-accurate),
+        # fallback to odds_at_alert for backwards compat
+        wallets = a.get("wallets") or []
+        if wallets and wallets[0].get("avg_entry_price") is not None:
+            a["entry_price"] = wallets[0]["avg_entry_price"]
+        else:
+            a["entry_price"] = a.get("odds_at_alert")
+
         # Current odds from market
         market_odds = market.get("current_odds")
         a["current_odds"] = market_odds

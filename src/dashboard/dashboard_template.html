@@ -702,7 +702,7 @@ function renderTable() {
             <td class="market-question" title="${(a.market_question || '').replace(/"/g, '&quot;')}">${a.market_question || ''}</td>
             <td>${a.direction || ''}</td>
             <td class="col-score">${a.score || 0}</td>
-            <td class="col-entry">${formatOdds(a.odds_at_alert)}</td>
+            <td class="col-entry">${formatOdds(a.entry_price)}</td>
             <td class="col-current">${formatOdds(a.current_odds)}</td>
             <td class="col-change">${changeHtml}</td>
             <td class="col-pnl">${pnlHtml}</td>
@@ -761,7 +761,7 @@ function renderDetail(a) {
     // Odds tracking
     const oddsHtml = `
     <div class="odds-track">
-        <span>Entry: <strong>${formatOdds(a.odds_at_alert)}</strong></span>
+        <span>Entry: <strong>${formatOdds(a.entry_price)}</strong></span>
         <span>Current: <strong>${formatOdds(a.current_odds)}</strong></span>
         <span>Max: <strong>${formatOdds(a.odds_max)}</strong></span>
         <span>Min: <strong>${formatOdds(a.odds_min)}</strong></span>

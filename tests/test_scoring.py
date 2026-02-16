@@ -352,3 +352,38 @@ class TestObviousBetStarCap:
         ]
         result = calculate_score(filters, total_amount=1_000)
         assert result.star_level <= 1
+
+
+# ── Stars use final score (not raw) ─────────────────────────
+
+
+class TestStarsUseFinalScore:
+    def test_stars_use_final_score(self):
+        """raw=110, mult≈1.46 → final≈160 → 4★ (not 3★ from raw 110).
+
+        Star thresholds: 220→5, 150→4, 100→3.
+        If stars used raw (110), result would be 3★.
+        With final (160), result should be 4★.
+        """
+        # Build filters that sum to ~110 raw across 2+ categories
+        filters = [
+            _fr("W01", 25, "wallet"),      # ACCUMULATION
+            _fr("B18D", 50, "behavior"),    # COORDINATION
+            _fr("M01", 15, "market"),       # TIMING
+            _fr("B07", 20, "behavior"),     # COORDINATION
+        ]
+        # raw = 110, amount=$50K → log mult ≈ 1.57 → sniper x1.2 → ~1.88
+        # final = round(110 * 1.88) = 207 → 4★
+        result = calculate_score(
+            filters, total_amount=50_000, wallet_market_count=2,
+        )
+        assert result.score_raw == 110
+        assert result.score_final > 150, (
+            f"Final score {result.score_final} should exceed 150 "
+            f"(raw={result.score_raw}, mult={result.multiplier})"
+        )
+        # Star based on final, not raw
+        assert result.star_level >= 4, (
+            f"Star {result.star_level} should be >=4 "
+            f"(final={result.score_final} >= 150 threshold)"
+        )
