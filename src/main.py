@@ -390,6 +390,19 @@ def _filter_markets(markets: list[Market], *, mode: str = "quick") -> list[Marke
 # ── Deep mode: parallel market processing ────────────────────
 
 
+_DEEP_SEMAPHORE_SIZE = 5
+_DEEP_BATCH_PAUSE = 1.0        # seconds between batches
+_DEEP_RETRY_DELAYS = [5, 15]   # exponential backoff for 429s (2 retries, then skip)
+
+
+def _is_rate_limited(exc: Exception) -> bool:
+    """Check if an exception is an HTTP 429 rate-limit error."""
+    import requests
+    if isinstance(exc, requests.exceptions.HTTPError):
+        return exc.response is not None and exc.response.status_code == 429
+    return "429" in str(exc) or "Too Many Requests" in str(exc)
+
+
 async def _process_markets_deep(
     markets,
     *,
@@ -404,52 +417,92 @@ async def _process_markets_deep(
     counters,
     chain_client,
 ) -> tuple[list[tuple[Alert, bool]], list[str]]:
-    """Process all markets with 10-way parallelism using asyncio.
+    """Process all markets with rate-limited parallelism.
 
+    - 5 concurrent workers (Semaphore)
+    - 1s pause between batches
+    - Retry with exponential backoff on 429 errors
     Returns (collected_alerts, errors).
     """
-    sem = asyncio.Semaphore(10)
     collected: list[tuple[Alert, bool]] = []
     errors: list[str] = []
-    processed = 0
     alert_count = 0
+    rate_limited = 0
+
+    def _call_process_market(market):
+        return _process_market(
+            market=market,
+            pm_client=pm_client,
+            wallet_analyzer=wallet_analyzer,
+            behavior_analyzer=behavior_analyzer,
+            market_analyzer=market_analyzer,
+            noise_filter=noise_filter,
+            arb_filter=arb_filter,
+            confluence_detector=confluence_detector,
+            db=db,
+            counters=counters,
+            excluded_senders=set(),
+            chain_client=chain_client,
+        )
 
     async def process_one(market):
-        nonlocal processed, alert_count
-        async with sem:
+        nonlocal alert_count, rate_limited
+        last_exc = None
+        max_attempts = len(_DEEP_RETRY_DELAYS) + 1
+        for attempt in range(max_attempts):
             try:
                 result = await asyncio.to_thread(
-                    _process_market,
-                    market=market,
-                    pm_client=pm_client,
-                    wallet_analyzer=wallet_analyzer,
-                    behavior_analyzer=behavior_analyzer,
-                    market_analyzer=market_analyzer,
-                    noise_filter=noise_filter,
-                    arb_filter=arb_filter,
-                    confluence_detector=confluence_detector,
-                    db=db,
-                    counters=counters,
-                    excluded_senders=set(),
-                    chain_client=chain_client,
+                    _call_process_market, market,
                 )
                 if result is not None:
                     collected.append(result)
                     alert_count += 1
+                return  # success
             except Exception as e:
-                errors.append(f"Market {market.market_id[:12]}: {e}")
-            finally:
-                processed += 1
-                if processed % 25 == 0:
-                    logger.info(
-                        "Deep scan progress: %d/%d markets, %d alerts found",
-                        processed, len(markets), alert_count,
+                if _is_rate_limited(e) and attempt < len(_DEEP_RETRY_DELAYS):
+                    delay = _DEEP_RETRY_DELAYS[attempt]
+                    logger.warning(
+                        "429 rate limit on %s — retry %d/%d in %ds",
+                        market.market_id[:12], attempt + 1,
+                        len(_DEEP_RETRY_DELAYS), delay,
                     )
+                    await asyncio.sleep(delay)
+                    last_exc = e
+                    continue
+                last_exc = e
+                break
 
-    await asyncio.gather(*(process_one(m) for m in markets))
+        # Exhausted retries or non-429 error
+        if _is_rate_limited(last_exc):
+            rate_limited += 1
+            logger.warning(
+                "Rate limited — skipping market %s (%s)",
+                market.market_id[:12],
+                market.question[:40] if market.question else "",
+            )
+        else:
+            errors.append(f"Market {market.market_id[:12]}: {last_exc}")
+
+    # Process in batches with pause between them
+    batch_size = _DEEP_SEMAPHORE_SIZE
+    processed = 0
+    for i in range(0, len(markets), batch_size):
+        batch = markets[i : i + batch_size]
+        await asyncio.gather(*(process_one(m) for m in batch))
+        processed += len(batch)
+        if processed % 25 == 0 or i + batch_size >= len(markets):
+            logger.info(
+                "Deep scan progress: %d/%d markets, %d alerts, %d rate_limited",
+                processed, len(markets), alert_count, rate_limited,
+            )
+        # Pause between batches to avoid 429s
+        if i + batch_size < len(markets):
+            await asyncio.sleep(_DEEP_BATCH_PAUSE)
+
+    ok_count = processed - rate_limited
     logger.info(
-        "Deep scan complete: %d/%d markets, %d alerts",
-        processed, len(markets), alert_count,
+        "Deep scan complete: %d/%d markets OK, %d rate_limited, %d alerts found",
+        ok_count, len(markets), rate_limited, alert_count,
     )
     return collected, errors
 
