@@ -29,6 +29,8 @@ CATEGORY_TAGS: dict[str, set[str]] = {
                   "bitcoin", "stock market", "recession", "gdp", "interest rates"},
     "geopolitics": {"geopolitics", "world", "middle east", "china", "russia",
                     "ukraine", "iran", "nato", "war", "sanctions"},
+    "science": {"science", "science & tech", "tech", "technology", "ai",
+                "space", "biotech"},
 }
 
 DATA_API_BASE = "https://data-api.polymarket.com"

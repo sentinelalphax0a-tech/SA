@@ -606,3 +606,36 @@ MARKET_BLACKLIST_TERMS: list[str] = [
     "price of solana", "price of xrp",
     "btc reach", "eth reach", "sol reach",
 ]
+
+# Additional blacklist terms for deep scan (sports events)
+DEEP_EXTRA_BLACKLIST: list[str] = [
+    "super bowl", "ufc", "boxing", "fight", "match",
+    "game", "playoff", "finals", "world series", "grand prix",
+]
+
+# Deep scan adds Science & Tech category
+DEEP_RELEVANT_CATEGORIES: set[str] = MARKET_RELEVANT_CATEGORIES | {
+    "Science", "science", "Science & Tech", "science & tech",
+}
+
+# ── Per-mode scan profiles ─────────────────────────────────
+SCAN_PROFILES: dict = {
+    "quick": {
+        "min_volume": MARKET_MIN_VOLUME_24H,        # 1000
+        "odds_min": ODDS_MIN,                        # 0.05
+        "odds_max": ODDS_MAX,                        # 0.55
+        "max_markets": MARKET_SCAN_CAP,              # 100
+        "categories": MARKET_CATEGORIES,             # politics, economics, geopolitics
+        "relevant_categories": MARKET_RELEVANT_CATEGORIES,
+        "extra_blacklist": [],
+    },
+    "deep": {
+        "min_volume": 200,
+        "odds_min": 0.05,
+        "odds_max": 0.85,
+        "max_markets": None,                         # no cap
+        "categories": MARKET_CATEGORIES + ["science"],
+        "relevant_categories": DEEP_RELEVANT_CATEGORIES,
+        "extra_blacklist": DEEP_EXTRA_BLACKLIST,
+    },
+}

@@ -11,6 +11,7 @@ Orchestrates the full scan cycle:
 Executable as: python -m src.main
 """
 
+import asyncio
 import logging
 import time
 from collections import defaultdict
@@ -346,35 +347,122 @@ def _try_consolidate(
 # ── Main scan ────────────────────────────────────────────────
 
 
-def _filter_markets(markets: list[Market]) -> list[Market]:
-    """Filter, sort, and cap markets for scanning."""
+def _filter_markets(markets: list[Market], *, mode: str = "quick") -> list[Market]:
+    """Filter, sort, and cap markets for scanning.
+
+    Uses SCAN_PROFILES[mode] for volume, odds, categories, blacklist, and cap.
+    Default mode="quick" preserves current behavior.
+    """
+    profile = config.SCAN_PROFILES[mode]
+    min_volume = profile["min_volume"]
+    odds_min = profile["odds_min"]
+    odds_max = profile["odds_max"]
+    max_markets = profile["max_markets"]
+    relevant_cats = profile["relevant_categories"]
+    blacklist = config.MARKET_BLACKLIST_TERMS + profile["extra_blacklist"]
+
     filtered = []
     for m in markets:
         # Volume filter
-        if (m.volume_24h or 0) < config.MARKET_MIN_VOLUME_24H:
+        if (m.volume_24h or 0) < min_volume:
             continue
         # Odds filter
         odds = m.current_odds
-        if odds is not None and not (config.ODDS_MIN <= odds <= config.ODDS_MAX):
+        if odds is not None and not (odds_min <= odds <= odds_max):
             continue
         # Category filter
-        if hasattr(config, "MARKET_RELEVANT_CATEGORIES") and m.category:
-            if m.category not in config.MARKET_RELEVANT_CATEGORIES:
-                continue
+        if m.category and m.category not in relevant_cats:
+            continue
         # Blacklist filter
-        if hasattr(config, "MARKET_BLACKLIST_TERMS") and m.question:
+        if m.question:
             q_lower = m.question.lower()
-            if any(term in q_lower for term in config.MARKET_BLACKLIST_TERMS):
+            if any(term in q_lower for term in blacklist):
                 continue
         filtered.append(m)
 
     # Sort by volume descending, cap
     filtered.sort(key=lambda m: m.volume_24h or 0, reverse=True)
-    return filtered[: config.MARKET_SCAN_CAP]
+    if max_markets is not None:
+        return filtered[:max_markets]
+    return filtered
 
 
-def run_scan() -> None:
-    """Execute a single scan cycle."""
+# ── Deep mode: parallel market processing ────────────────────
+
+
+async def _process_markets_deep(
+    markets,
+    *,
+    pm_client,
+    wallet_analyzer,
+    behavior_analyzer,
+    market_analyzer,
+    noise_filter,
+    arb_filter,
+    confluence_detector,
+    db,
+    counters,
+    chain_client,
+) -> tuple[list[tuple[Alert, bool]], list[str]]:
+    """Process all markets with 10-way parallelism using asyncio.
+
+    Returns (collected_alerts, errors).
+    """
+    sem = asyncio.Semaphore(10)
+    collected: list[tuple[Alert, bool]] = []
+    errors: list[str] = []
+    processed = 0
+    alert_count = 0
+
+    async def process_one(market):
+        nonlocal processed, alert_count
+        async with sem:
+            try:
+                result = await asyncio.to_thread(
+                    _process_market,
+                    market=market,
+                    pm_client=pm_client,
+                    wallet_analyzer=wallet_analyzer,
+                    behavior_analyzer=behavior_analyzer,
+                    market_analyzer=market_analyzer,
+                    noise_filter=noise_filter,
+                    arb_filter=arb_filter,
+                    confluence_detector=confluence_detector,
+                    db=db,
+                    counters=counters,
+                    excluded_senders=set(),
+                    chain_client=chain_client,
+                )
+                if result is not None:
+                    collected.append(result)
+                    alert_count += 1
+            except Exception as e:
+                errors.append(f"Market {market.market_id[:12]}: {e}")
+            finally:
+                processed += 1
+                if processed % 25 == 0:
+                    logger.info(
+                        "Deep scan progress: %d/%d markets, %d alerts found",
+                        processed, len(markets), alert_count,
+                    )
+
+    await asyncio.gather(*(process_one(m) for m in markets))
+    logger.info(
+        "Deep scan complete: %d/%d markets, %d alerts",
+        processed, len(markets), alert_count,
+    )
+    return collected, errors
+
+
+def run_scan(mode: str = "quick", dry_run: bool = False) -> None:
+    """Execute a single scan cycle.
+
+    Args:
+        mode: "quick" (default, current behavior) or "deep" (all markets, no
+              global timeout, 10x parallel).
+        dry_run: If True, run full pipeline but skip all DB writes and
+                 Telegram/X publishing. Logs what would have been done.
+    """
     # Suppress noisy HTTP client logging
     logging.getLogger("httpx").setLevel(logging.WARNING)
     logging.getLogger("httpcore").setLevel(logging.WARNING)
@@ -391,7 +479,10 @@ def run_scan() -> None:
         return
 
     scan = Scan(timestamp=datetime.now(timezone.utc))
-    logger.info("=== Sentinel Alpha scan started ===")
+    logger.info(
+        "=== Sentinel Alpha scan started === mode=%s dry_run=%s",
+        mode, dry_run,
+    )
 
     try:
         pm_client = PolymarketClient()
@@ -415,10 +506,11 @@ def run_scan() -> None:
 
     try:
         # ── Step 2: Fetch active markets ─────────────────────
+        profile = config.SCAN_PROFILES[mode]
         raw_markets = pm_client.get_active_markets(
-            categories=config.MARKET_CATEGORIES,
+            categories=profile["categories"],
         )
-        markets = _filter_markets(raw_markets)
+        markets = _filter_markets(raw_markets, mode=mode)
         scan.markets_scanned = len(markets)
         logger.info("Fetched %d markets (%d after filtering)", len(raw_markets), len(markets))
 
@@ -447,25 +539,12 @@ def run_scan() -> None:
 
         # ── Step 3-7: Per-market pipeline (collect phase) ──────
         markets_processed = 0
-        for market in markets:
-            # Timeout check
-            if time.time() > scan_deadline:
-                logger.warning(
-                    "Scan timeout (%ds) reached after %d/%d markets",
-                    config.SCAN_TIMEOUT_SECONDS, markets_processed, len(markets),
-                )
-                break
-            markets_processed += 1
-            t_mkt = time.time()
-            try:
-                # Build excluded senders: those appearing in >SENDER_MAX_MARKETS markets
-                excluded_senders = {
-                    s for s, mkts in sender_market_count.items()
-                    if len(mkts) > config.SENDER_MAX_MARKETS
-                }
 
-                result = _process_market(
-                    market=market,
+        if mode == "deep":
+            # Deep mode: 10x parallel, no global timeout, no sender tracking
+            collected_alerts, deep_errors = asyncio.run(
+                _process_markets_deep(
+                    markets,
                     pm_client=pm_client,
                     wallet_analyzer=wallet_analyzer,
                     behavior_analyzer=behavior_analyzer,
@@ -475,28 +554,64 @@ def run_scan() -> None:
                     confluence_detector=confluence_detector,
                     db=db,
                     counters=counters,
-                    excluded_senders=excluded_senders,
                     chain_client=chain_client,
                 )
+            )
+            errors.extend(deep_errors)
+            markets_processed = len(markets)
 
-                # Update sender_market_count with senders seen in this market
-                for sender in confluence_detector.last_senders_seen:
-                    sender_market_count[sender].add(market.market_id)
+        else:
+            # Quick mode: sequential, with global timeout + sender tracking
+            for market in markets:
+                # Timeout check (quick mode only)
+                if time.time() > scan_deadline:
+                    logger.warning(
+                        "Scan timeout (%ds) reached after %d/%d markets",
+                        config.SCAN_TIMEOUT_SECONDS, markets_processed, len(markets),
+                    )
+                    break
+                markets_processed += 1
+                t_mkt = time.time()
+                try:
+                    # Build excluded senders: those appearing in >SENDER_MAX_MARKETS markets
+                    excluded_senders = {
+                        s for s, mkts in sender_market_count.items()
+                        if len(mkts) > config.SENDER_MAX_MARKETS
+                    }
 
-                if result is not None:
-                    collected_alerts.append(result)
-                logger.info(
-                    "Market %d/%d done in %.1fs: %s",
-                    markets_processed, len(markets),
-                    time.time() - t_mkt,
-                    market.question[:50],
-                )
+                    result = _process_market(
+                        market=market,
+                        pm_client=pm_client,
+                        wallet_analyzer=wallet_analyzer,
+                        behavior_analyzer=behavior_analyzer,
+                        market_analyzer=market_analyzer,
+                        noise_filter=noise_filter,
+                        arb_filter=arb_filter,
+                        confluence_detector=confluence_detector,
+                        db=db,
+                        counters=counters,
+                        excluded_senders=excluded_senders,
+                        chain_client=chain_client,
+                    )
 
-            except Exception as e:
-                msg = f"Market {market.market_id[:12]}: {e}"
-                logger.error("Error processing market: %s", msg, exc_info=True)
-                errors.append(msg)
-                continue
+                    # Update sender_market_count with senders seen in this market
+                    for sender in confluence_detector.last_senders_seen:
+                        sender_market_count[sender].add(market.market_id)
+
+                    if result is not None:
+                        collected_alerts.append(result)
+                    logger.info(
+                        "Market %d/%d done in %.1fs: %s",
+                        markets_processed, len(markets),
+                        time.time() - t_mkt,
+                        market.question[:50],
+                    )
+
+                except Exception as e:
+                    msg = f"Market {market.market_id[:12]}: {e}"
+                    logger.error("Error processing market: %s", msg, exc_info=True)
+                    errors.append(msg)
+                    continue
 
         # ── Step 7b: Deduplicate ───────────────────────────────
         collected_alerts = _deduplicate_alerts(collected_alerts)
@@ -508,17 +623,22 @@ def run_scan() -> None:
             try:
                 # 8a. Within-scan dedup: still insert, but skip publish
                 if alert.deduplicated:
-                    alert_id = db.insert_alert(alert)
-                    alert.id = alert_id
+                    if dry_run:
+                        logger.info(
+                            "[DRY-RUN] Would insert deduplicated alert: %s",
+                            alert.market_question[:50] if alert.market_question else alert.market_id[:12],
+                        )
+                    else:
+                        alert_id = db.insert_alert(alert)
+                        alert.id = alert_id
                     counters["alerts_generated"] += 1
                     logger.debug(
-                        "Skipping publish for within-scan deduplicated alert #%s",
-                        alert_id,
+                        "Skipping publish for within-scan deduplicated alert",
                     )
                     continue
 
                 # 8b. Cross-scan dedup: check for existing alert in last 24h
-                existing_id = _check_cross_scan_duplicate(alert, db)
+                existing_id = _check_cross_scan_duplicate(alert, db) if not dry_run else None
                 if existing_id is not None:
                     db.update_alert_fields(existing_id, {
                         "odds_at_alert": alert.odds_at_alert,
@@ -538,7 +658,7 @@ def run_scan() -> None:
                     continue
 
                 # 8b2. High-star consolidation: merge into existing 4+★ alert
-                if _try_consolidate(alert, db, telegram):
+                if not dry_run and _try_consolidate(alert, db, telegram):
                     counters["alerts_consolidated"] += 1
                     logger.info(
                         "Consolidated alert for %s %s into existing high-star alert",
@@ -548,35 +668,56 @@ def run_scan() -> None:
                     continue
 
                 # 8c. New alert: insert + publish
-                alert_id = db.insert_alert(alert)
-                alert.id = alert_id
-                counters["alerts_generated"] += 1
-
-                _publish_alert(
-                    alert=alert,
-                    alert_id=alert_id,
-                    is_whale=is_whale,
-                    db=db,
-                    twitter=twitter,
-                    telegram=telegram,
-                    counters=counters,
-                )
+                if dry_run:
+                    logger.info(
+                        "[DRY-RUN] Would insert alert: %s %d★ %dpts",
+                        alert.market_question[:50] if alert.market_question else alert.market_id[:12],
+                        alert.star_level or 0,
+                        alert.score or 0,
+                    )
+                    _publish_alert(
+                        alert=alert,
+                        alert_id=None,
+                        is_whale=is_whale,
+                        db=db,
+                        twitter=twitter,
+                        telegram=telegram,
+                        counters=counters,
+                        dry_run=True,
+                    )
+                else:
+                    alert_id = db.insert_alert(alert)
+                    alert.id = alert_id
+                    counters["alerts_generated"] += 1
+                    _publish_alert(
+                        alert=alert,
+                        alert_id=alert_id,
+                        is_whale=is_whale,
+                        db=db,
+                        twitter=twitter,
+                        telegram=telegram,
+                        counters=counters,
+                        dry_run=False,
+                    )
             except Exception as e:
                 logger.error("Failed to save/publish alert: %s", e)
 
         # ── Step 8b: Sell monitoring ──────────────────────────
-        try:
-            sell_detector = SellDetector(db_client=db, polymarket_client=pm_client)
-            sell_events = sell_detector.check_open_positions()
-            for event in sell_events:
-                try:
-                    telegram.publish_sell_notification(event)
-                except Exception as e:
-                    logger.debug("Sell notification failed: %s", e)
-            if sell_events:
-                logger.info("Sell monitoring: %d events detected", len(sell_events))
-        except Exception as e:
-            logger.error("Sell monitoring failed: %s", e)
+        if not dry_run:
+            try:
+                sell_detector = SellDetector(db_client=db, polymarket_client=pm_client)
+                sell_events = sell_detector.check_open_positions()
+                for event in sell_events:
+                    try:
+                        telegram.publish_sell_notification(event)
+                    except Exception as e:
+                        logger.debug("Sell notification failed: %s", e)
+                if sell_events:
+                    logger.info("Sell monitoring: %d events detected", len(sell_events))
+            except Exception as e:
+                logger.error("Sell monitoring failed: %s", e)
+        else:
+            logger.info("[DRY-RUN] Skipping sell monitoring")
 
         # ── Step 9: Record scan ──────────────────────────────
         scan.markets_scanned = markets_processed
@@ -596,10 +737,13 @@ def run_scan() -> None:
         scan.errors = str(e)[:500]
 
     finally:
-        try:
-            db.insert_scan(scan)
-        except Exception as e:
-            logger.error("Failed to save scan record: %s", e)
+        if not dry_run:
+            try:
+                db.insert_scan(scan)
+            except Exception as e:
+                logger.error("Failed to save scan record: %s", e)
+        else:
+            logger.info("[DRY-RUN] Scan complete — not recording to database")
 
     _log_scan_summary(scan)
 
@@ -1022,9 +1166,22 @@ def _publish_alert(
     twitter: TwitterBot,
     telegram: TelegramBot,
     counters: dict,
+    dry_run: bool = False,
 ) -> None:
     """Publish an alert to Telegram and/or X."""
     star = alert.star_level or 0
+    q = alert.market_question[:50] if alert.market_question else alert.market_id[:12]
+
+    if dry_run:
+        if star >= 4:
+            whale_tag = " (whale)" if is_whale else ""
+            logger.info(
+                "[DRY-RUN] Would send Telegram%s: %d★ %s %s",
+                whale_tag, star, alert.direction or "?", q,
+            )
+        if star >= 3:
+            logger.info("[DRY-RUN] Would tweet: %d★ %s %s", star, alert.direction or "?", q)
+        return
 
     # ── Insert AlertTracking for resolution tracking ──────
     if alert_id:
@@ -1095,4 +1252,20 @@ def _publish_alert(
 
 
 if __name__ == "__main__":
-    run_scan()
+    import argparse
+
+    parser = argparse.ArgumentParser(description="Sentinel Alpha scanner")
+    parser.add_argument(
+        "--mode",
+        choices=["quick", "deep"],
+        default="quick",
+        help="quick = current behavior (100 markets, 8min timeout); "
+             "deep = all markets, no timeout, 10x parallel",
+    )
+    parser.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Run full pipeline but don't publish to Telegram/X or write alerts to Supabase",
+    )
+    args = parser.parse_args()
+    run_scan(mode=args.mode, dry_run=args.dry_run)
