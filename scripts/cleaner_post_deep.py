@@ -1,5 +1,5 @@
 """
-Cleaner Post-Deep Scan — automatic cleanup of false confluence alerts.
+Cleaner Post-Deep Scan — automatic cleanup of false alerts.
 
 Runs after each deep scan.  Fully automatic, no user input.
 
@@ -19,6 +19,7 @@ Usage:
 import logging
 import re
 import sys
+# import time  # only needed for paso 2B
 from collections import defaultdict
 from datetime import datetime, timezone
 
@@ -34,6 +35,7 @@ from src.config import (
 )
 from src.database.supabase_client import SupabaseClient
 from src.scanner.blockchain_client import POLYMARKET_CONTRACTS
+# from src.scanner.polymarket_client import PolymarketClient  # only needed for paso 2B
 
 logging.basicConfig(
     level=logging.INFO,
@@ -47,6 +49,19 @@ PAGE_SIZE = 500
 _SENDER_FILTERS = {"C03d", "C07", "C06"}
 # All confluence filters eligible for removal
 _ALL_C_FILTERS = {"C01", "C02", "C03d", "C06", "C07"}
+
+# PASO 2B — Limpieza de filtros con datos de lookback incorrectos
+# Este paso fue necesario una sola vez para corregir alertas generadas
+# antes del fix de W04/W05/W09/B20/B23/B28/N06 (commit d9954ce).
+# Los filtros ya están corregidos en producción.
+# Descomentar solo si se necesita re-ejecutar por algún motivo.
+#
+# _LOOKBACK_FILTERS = {
+#     "W04", "W05", "W09", "B20",
+#     "B23a", "B23b", "B28a", "B28b",
+#     "N06a", "N06b", "N06c",
+# }
+# _N06_FILTERS = {"N06a", "N06b", "N06c"}
 
 
 # ── Helpers ───────────────────────────────────────────────────
@@ -371,6 +386,207 @@ def step2_clean_alerts(
     return modifications, len(alerts)
 
 
+# ── Step 2B helpers (commented out — one-time use) ────────────
+#
+# PASO 2B — Limpieza de filtros con datos de lookback incorrectos
+# Este paso fue necesario una sola vez para corregir alertas generadas
+# antes del fix de W04/W05/W09/B20/B23/B28/N06 (commit d9954ce).
+# Los filtros ya están corregidos en producción.
+# Descomentar solo si se necesita re-ejecutar por algún motivo.
+#
+# def _extract_balance_from_details(
+#     filters: list[dict], filter_id: str,
+# ) -> float | None:
+#     """Extract wallet balance from B28/B23 filter details."""
+#     for f in filters:
+#         if f.get("filter_id") != filter_id:
+#             continue
+#         details = f.get("details", "")
+#         m = re.search(r"\$([0-9,]+)", details)
+#         if m:
+#             try:
+#                 return float(m.group(1).replace(",", ""))
+#             except ValueError:
+#                 pass
+#     return None
+#
+#
+# def _determine_n06_tier(non_pm_count: int) -> str | None:
+#     """Return the correct N06 filter_id for a given non-political market count."""
+#     if non_pm_count >= config.DEGEN_HEAVY_MIN:
+#         return "N06c"
+#     if non_pm_count >= config.DEGEN_LIGHT_MAX + 1:
+#         return "N06b"
+#     if non_pm_count >= 1:
+#         return "N06a"
+#     return None
+#
+#
+# def _build_n06_filter(filter_id: str, non_pm_count: int) -> dict:
+#     """Build a filter dict for a given N06 tier."""
+#     filt_map = {
+#         "N06a": config.FILTER_N06A,
+#         "N06b": config.FILTER_N06B,
+#         "N06c": config.FILTER_N06C,
+#     }
+#     filt = filt_map[filter_id]
+#     return {
+#         "filter_id": filt["id"],
+#         "filter_name": filt["name"],
+#         "points": filt["points"],
+#         "category": filt["category"],
+#         "details": f"non_pm_markets={non_pm_count} (real)",
+#     }
+#
+#
+# def step2b_clean_lookback_filters(
+#     db: SupabaseClient,
+#     pm_client: PolymarketClient,
+# ) -> tuple[list[dict], int]:
+#     """Clean filters that depend on lookback data using real PM history."""
+#     alerts = _fetch_all_pending(db)
+#     modifications: list[dict] = []
+#     seen_wallets: set[str] = set()
+#
+#     for alert in alerts:
+#         filters = alert.get("filters_triggered") or []
+#         fids_present = {f.get("filter_id", "") for f in filters}
+#
+#         if not fids_present & _LOOKBACK_FILTERS:
+#             continue
+#
+#         wallets = alert.get("wallets") or []
+#         if not wallets:
+#             continue
+#         primary = max(wallets, key=lambda w: w.get("total_amount", 0))
+#         wallet_address = primary.get("address")
+#         if not wallet_address:
+#             continue
+#
+#         addr_lower = wallet_address.lower()
+#         if addr_lower not in seen_wallets:
+#             seen_wallets.add(addr_lower)
+#             time.sleep(0.1)
+#
+#         try:
+#             history = pm_client.get_wallet_pm_history_cached(wallet_address)
+#         except Exception as e:
+#             logger.warning(
+#                 "PM history failed for %s (alert #%s): %s",
+#                 wallet_address[:10], alert.get("id"), e,
+#             )
+#             continue
+#         if history is None:
+#             continue
+#
+#         real_markets = history.get("distinct_markets", 0)
+#         total_volume = history.get("total_volume", 0)
+#         market_ids = history.get("market_ids", [])
+#
+#         remove_ids: set[str] = set()
+#         add_filters: list[dict] = []
+#
+#         if "W04" in fids_present and real_markets > config.W04_SUPPRESS_MARKETS:
+#             remove_ids.add("W04")
+#         if "W05" in fids_present and real_markets > config.W05_SUPPRESS_MARKETS:
+#             remove_ids.add("W05")
+#         if "W09" in fids_present and real_markets > config.W04_SUPPRESS_MARKETS:
+#             remove_ids.add("W09")
+#         if "B20" in fids_present and real_markets > config.OLD_WALLET_PM_MIN_MARKETS:
+#             remove_ids.add("B20")
+#
+#         for b28 in ("B28a", "B28b"):
+#             if b28 in fids_present:
+#                 balance = _extract_balance_from_details(filters, b28)
+#                 if (balance and balance > 0
+#                         and total_volume > balance * config.ALLIN_VOLUME_SUPPRESS_RATIO):
+#                     remove_ids.add(b28)
+#
+#         for b23 in ("B23a", "B23b"):
+#             if b23 in fids_present:
+#                 balance = _extract_balance_from_details(filters, b23)
+#                 if (balance and balance > 0
+#                         and total_volume > balance * config.ALLIN_VOLUME_SUPPRESS_RATIO):
+#                     remove_ids.add(b23)
+#
+#         n06_present = fids_present & _N06_FILTERS
+#         if n06_present and market_ids:
+#             for mid in market_ids:
+#                 if mid not in pm_client._market_question_cache:
+#                     time.sleep(0.1)
+#             real_non_pm = pm_client.count_non_political_markets(market_ids)
+#             correct_tier = _determine_n06_tier(real_non_pm)
+#             if correct_tier is None:
+#                 remove_ids |= n06_present
+#             elif correct_tier not in n06_present:
+#                 remove_ids |= n06_present
+#                 add_filters.append(_build_n06_filter(correct_tier, real_non_pm))
+#
+#         if not remove_ids:
+#             continue
+#
+#         removed_filters: list[dict] = []
+#         remaining_filters: list[dict] = []
+#         for f in filters:
+#             if f.get("filter_id", "") in remove_ids:
+#                 removed_filters.append(f)
+#             else:
+#                 remaining_filters.append(f)
+#         remaining_filters.extend(add_filters)
+#
+#         if not removed_filters and not add_filters:
+#             continue
+#
+#         multiplier = alert.get("multiplier", 1.0)
+#         total_amount = alert.get("total_amount", 0.0) or 0.0
+#         new_raw, new_final, new_stars = _recalculate(
+#             remaining_filters, multiplier, total_amount,
+#         )
+#
+#         old_score = alert.get("score", 0) or 0
+#         old_stars = alert.get("star_level", 0) or 0
+#
+#         if new_final == old_score and new_stars == old_stars and not add_filters:
+#             continue
+#
+#         aid = alert.get("id")
+#         try:
+#             db.update_alert_fields(aid, {
+#                 "score": new_final,
+#                 "score_raw": new_raw,
+#                 "star_level": new_stars,
+#                 "filters_triggered": remaining_filters,
+#             })
+#         except Exception as exc:
+#             logger.error("Failed to update alert #%s: %s", aid, exc)
+#             continue
+#
+#         removed_desc = [
+#             f"{f.get('filter_id')}({f.get('points', 0):+d})"
+#             for f in removed_filters
+#         ]
+#         added_desc = [
+#             f"+{f.get('filter_id')}({f.get('points', 0):+d})"
+#             for f in add_filters
+#         ]
+#
+#         modifications.append({
+#             "alert_id": aid,
+#             "market_question": alert.get("market_question", "?"),
+#             "old_score": old_score,
+#             "new_score": new_final,
+#             "old_stars": old_stars,
+#             "new_stars": new_stars,
+#             "removed": removed_desc,
+#             "added": added_desc,
+#             "wallet": wallet_address[:12],
+#             "real_markets": real_markets,
+#             "total_volume": total_volume,
+#         })
+#
+#     return modifications, len(alerts)
+
+
 # ── Step 3: Report ────────────────────────────────────────────
 
 
@@ -384,6 +600,8 @@ def step3_report(
     print("=" * 60)
     print("  CLEANER POST-DEEP SCAN")
     print("=" * 60)
+
+    # ── Paso 1: Senders ──
     print()
     print(f"  Senders excluidos (config): {config_count}")
     print(f"  Senders nuevos detectados (>{SENDER_AUTO_EXCLUDE_MIN_WALLETS} wallets): "
@@ -393,33 +611,32 @@ def step3_report(
         print(f"    - {addr[:12]}… ({s['wallet_count']} wallets) "
               f"→ guardado en DB")
 
+    # ── Paso 2: Confluencia ──
     print()
-    print(f"  Alertas revisadas: {total_reviewed}")
-    print(f"  Alertas modificadas: {len(modifications)}")
-    print(f"  Alertas sin cambios: {total_reviewed - len(modifications)}")
+    print(f"  Alertas revisadas (confluencia): {total_reviewed}")
+    print(f"  Alertas modificadas (confluencia): {len(modifications)}")
+
+    warnings: list[str] = []
+
+    if modifications:
+        print()
+        for m in modifications:
+            mkt = m["market_question"] or "?"
+            if isinstance(mkt, str) and len(mkt) > 50:
+                mkt = mkt[:47] + "…"
+            print(f"  Alert #{m['alert_id']}: {mkt}")
+            print(f"    Score: {m['old_score']} → {m['new_score']} | "
+                  f"Stars: {m['old_stars']}★ → {m['new_stars']}★")
+            print(f"    Filtros eliminados: {', '.join(m['removed'])}")
+            if m.get("new_stars", 1) == 0 or m.get("new_score", 40) < 40:
+                warnings.append(
+                    f"  ⚠️  Alert #{m['alert_id']} bajó a {m['new_stars']}★ "
+                    f"(score {m['new_score']}) — considerar eliminar"
+                )
 
     if not modifications:
         print()
         print("  Sin alertas afectadas.")
-        print("=" * 60)
-        return
-
-    print()
-    warnings: list[str] = []
-    for m in modifications:
-        mkt = m["market_question"] or "?"
-        if isinstance(mkt, str) and len(mkt) > 50:
-            mkt = mkt[:47] + "…"
-        print(f"  Alert #{m['alert_id']}: {mkt}")
-        print(f"    Score: {m['old_score']} → {m['new_score']} | "
-              f"Stars: {m['old_stars']}★ → {m['new_stars']}★")
-        print(f"    Filtros eliminados: {', '.join(m['removed'])}")
-
-        if m["new_stars"] == 0 or m["new_score"] < 40:
-            warnings.append(
-                f"  ⚠️  Alert #{m['alert_id']} bajó a {m['new_stars']}★ "
-                f"(score {m['new_score']}) — considerar eliminar"
-            )
 
     if warnings:
         print()
@@ -455,8 +672,8 @@ def main() -> None:
     # Build prefix → full address map from all senders in wallet_funding
     prefix_to_full = _build_prefix_to_full(sender_counts)
 
-    # Step 2 — Audit & clean alerts
-    logger.info("Paso 2: Auditando alertas pendientes…")
+    # Step 2 — Audit & clean confluence alerts
+    logger.info("Paso 2: Auditando alertas pendientes (confluencia)…")
     modifications, total_reviewed = step2_clean_alerts(
         db, all_excluded, prefix_to_full,
     )
@@ -464,6 +681,19 @@ def main() -> None:
         "Revisadas: %d | Modificadas: %d",
         total_reviewed, len(modifications),
     )
+
+    # Step 2B — desactivado (ya ejecutado, filtros corregidos en producción)
+    # Descomentar solo si se necesita re-ejecutar:
+    # from src.scanner.polymarket_client import PolymarketClient
+    # logger.info("Paso 2B: Limpiando filtros con datos de lookback…")
+    # pm_client = PolymarketClient()
+    # lookback_mods, lookback_reviewed = step2b_clean_lookback_filters(
+    #     db, pm_client,
+    # )
+    # logger.info(
+    #     "Revisadas: %d | Corregidas: %d",
+    #     lookback_reviewed, len(lookback_mods),
+    # )
 
     # Step 3 — Report
     step3_report(

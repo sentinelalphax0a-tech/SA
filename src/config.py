@@ -308,6 +308,12 @@ WHALE_MASSIVE_MIN: float = 50000.0    # B19c
 # Old wallet new in PM (B20)
 OLD_WALLET_MIN_AGE_DAYS: int = 180    # wallet > 180 days
 OLD_WALLET_PM_MAX_DAYS: int = 7       # PM activity < 7 days
+OLD_WALLET_PM_MIN_MARKETS: int = 3    # suppress B20 if wallet traded in > N distinct PM markets
+
+# Lookback-dependent filter suppression thresholds
+W04_SUPPRESS_MARKETS: int = 3    # suppress W04 if real distinct_markets > 3
+W05_SUPPRESS_MARKETS: int = 5    # suppress W05 if real distinct_markets > 5
+ALLIN_VOLUME_SUPPRESS_RATIO: float = 3.0  # suppress B28/B23 if PM volume > 3x USDC balance
 
 # Round balance detection (W11)
 ROUND_BALANCES: list[float] = [5000.0, 10000.0, 50000.0]

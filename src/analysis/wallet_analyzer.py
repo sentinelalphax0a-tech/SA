@@ -35,9 +35,10 @@ def _fr(filt: dict, details: str | None = None) -> FilterResult:
 class WalletAnalyzer:
     """Evaluates wallet-level and origin filters."""
 
-    def __init__(self, db: SupabaseClient, chain: BlockchainClient) -> None:
+    def __init__(self, db: SupabaseClient, chain: BlockchainClient, pm_client=None) -> None:
         self.db = db
         self.chain = chain
+        self.pm_client = pm_client
 
     # Minimum points from basic (non-funding) checks before we spend
     # API calls on funding source analysis.
@@ -119,8 +120,36 @@ class WalletAnalyzer:
 
     def _check_market_count(self, wallet: Wallet) -> list[FilterResult]:
         if wallet.total_markets == 1:
+            # Check real PM history before firing W04
+            if self.pm_client is not None:
+                try:
+                    history = self.pm_client.get_wallet_pm_history_cached(wallet.address)
+                    if history is not None:
+                        real_markets = history.get("distinct_markets", 0)
+                        if real_markets > config.W04_SUPPRESS_MARKETS:
+                            logger.info(
+                                "W04 suppressed for %s: real distinct_markets=%d",
+                                wallet.address[:10], real_markets,
+                            )
+                            return []
+                except Exception as e:
+                    logger.debug("W04 PM history check failed for %s: %s", wallet.address[:10], e)
             return [_fr(config.FILTER_W04)]
         if 2 <= wallet.total_markets <= 3:
+            # Check real PM history before firing W05
+            if self.pm_client is not None:
+                try:
+                    history = self.pm_client.get_wallet_pm_history_cached(wallet.address)
+                    if history is not None:
+                        real_markets = history.get("distinct_markets", 0)
+                        if real_markets > config.W05_SUPPRESS_MARKETS:
+                            logger.info(
+                                "W05 suppressed for %s: real distinct_markets=%d",
+                                wallet.address[:10], real_markets,
+                            )
+                            return []
+                except Exception as e:
+                    logger.debug("W05 PM history check failed for %s: %s", wallet.address[:10], e)
             return [_fr(config.FILTER_W05, f"markets={wallet.total_markets}")]
         return []
 

@@ -548,8 +548,8 @@ def run_scan(
         pm_client = PolymarketClient()
         chain_client = BlockchainClient()
         news = NewsChecker()
-        wallet_analyzer = WalletAnalyzer(db, chain_client)
-        behavior_analyzer = BehaviorAnalyzer(db_client=db)
+        wallet_analyzer = WalletAnalyzer(db, chain_client, pm_client=pm_client)
+        behavior_analyzer = BehaviorAnalyzer(db_client=db, pm_client=pm_client)
         market_analyzer = MarketAnalyzer(db_client=db, polymarket_client=pm_client)
         noise_filter = NoiseFilter(news_checker=news, db_client=db)
         arb_filter = ArbitrageFilter(db_client=db)
@@ -931,6 +931,7 @@ def _process_market(
                 arb_filter=arb_filter,
                 db=db,
                 chain_client=chain_client,
+                pm_client=pm_client,
             )
             if result is None:
                 continue
@@ -1141,6 +1142,7 @@ def _analyze_wallet(
     arb_filter: ArbitrageFilter,
     db: SupabaseClient,
     chain_client: BlockchainClient | None = None,
+    pm_client: PolymarketClient | None = None,
 ) -> tuple[dict, list[FilterResult]] | None:
     """Analyze a single wallet. Returns (wallet_data, filters) or None to skip."""
     t_wallet_start = time.time()
@@ -1195,6 +1197,16 @@ def _analyze_wallet(
         non_pm = 0
         if wallet_data_db:
             non_pm = wallet_data_db.get("non_pm_markets", 0)
+
+        # Populate non_pm_markets from real PM history if DB has 0
+        if non_pm == 0 and pm_client is not None:
+            try:
+                history = pm_client.get_wallet_pm_history_cached(wallet_address)
+                if history and history.get("market_ids"):
+                    non_pm = pm_client.count_non_political_markets(history["market_ids"])
+            except Exception as e:
+                logger.debug("N06 PM history check failed for %s: %s", wallet_address[:10], e)
+
         wallet_obj = Wallet(address=wallet_address, non_pm_markets=non_pm)
 
         n_filters = noise_filter.analyze(

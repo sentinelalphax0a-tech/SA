@@ -50,6 +50,10 @@ class PolymarketClient:
         self.session.headers.update({"Accept": "application/json"})
         # Cache raw market data keyed by conditionId to avoid re-fetching
         self._market_cache: dict[str, dict] = {}
+        # Per-scan cache for wallet PM history (one API call per wallet)
+        self._pm_history_cache: dict[str, dict | None] = {}
+        # Cache for market questions (questions never change)
+        self._market_question_cache: dict[str, str | None] = {}
 
     # ── Markets (Gamma API) ─────────────────────────────────
 
@@ -372,6 +376,123 @@ class PolymarketClient:
             time.sleep(CLOB_DELAY)
 
         return all_trades
+
+    # ── Wallet PM History (Data API) ─────────────────────────
+
+    def get_wallet_pm_history(self, wallet_address: str) -> dict | None:
+        """Check a wallet's real Polymarket trading history.
+
+        Queries the Data API for trades by this wallet (any market)
+        to determine if the wallet is actually new to Polymarket.
+
+        Returns:
+            {"trade_count": int, "distinct_markets": int,
+             "total_volume": float, "market_ids": list[str]} or None on failure.
+        """
+        try:
+            resp = self.session.get(
+                f"{DATA_API_BASE}/trades",
+                params={
+                    "maker": wallet_address,
+                    "limit": 100,
+                },
+                timeout=10,
+            )
+            resp.raise_for_status()
+            raw_trades = resp.json()
+
+            if not raw_trades:
+                return {
+                    "trade_count": 0,
+                    "distinct_markets": 0,
+                    "total_volume": 0.0,
+                    "market_ids": [],
+                }
+
+            markets = {t.get("market") or t.get("conditionId") for t in raw_trades}
+            markets.discard(None)
+
+            total_volume = 0.0
+            for t in raw_trades:
+                size = float(t.get("size", 0))
+                price = float(t.get("price", 0))
+                total_volume += size * price
+
+            return {
+                "trade_count": len(raw_trades),
+                "distinct_markets": len(markets),
+                "total_volume": total_volume,
+                "market_ids": list(markets),
+            }
+        except Exception as e:
+            logger.warning("get_wallet_pm_history failed for %s: %s", wallet_address[:10], e)
+            return None
+
+    def get_wallet_pm_history_cached(self, wallet_address: str) -> dict | None:
+        """Cached version of get_wallet_pm_history.
+
+        Returns cached result if available, otherwise calls the API
+        and caches the result. Cache is per PolymarketClient instance
+        (new instance per scan = natural lifecycle).
+        """
+        addr = wallet_address.lower()
+        if addr in self._pm_history_cache:
+            return self._pm_history_cache[addr]
+        result = self.get_wallet_pm_history(wallet_address)
+        self._pm_history_cache[addr] = result
+        return result
+
+    def get_market_question(self, condition_id: str) -> str | None:
+        """Fetch the question text for a market by conditionId.
+
+        Uses _market_question_cache to avoid re-fetching (questions never change).
+        Also checks _market_cache populated by get_active_markets().
+        """
+        if condition_id in self._market_question_cache:
+            return self._market_question_cache[condition_id]
+
+        # Check raw market cache first
+        if condition_id in self._market_cache:
+            q = self._market_cache[condition_id].get("question")
+            self._market_question_cache[condition_id] = q
+            return q
+
+        # Fetch from Gamma API
+        try:
+            resp = self.session.get(
+                f"{self.gamma_base}/markets",
+                params={"conditionId": condition_id, "limit": 1},
+                timeout=10,
+            )
+            resp.raise_for_status()
+            data = resp.json()
+            if data:
+                q = data[0].get("question")
+                self._market_question_cache[condition_id] = q
+                return q
+        except Exception as e:
+            logger.debug("get_market_question failed for %s: %s", condition_id[:12], e)
+
+        self._market_question_cache[condition_id] = None
+        return None
+
+    def count_non_political_markets(self, market_ids: list[str]) -> int:
+        """Count how many markets are non-political (sports, crypto, entertainment).
+
+        For each market_id, fetches the question from Gamma API and checks
+        against config.MARKET_BLACKLIST_TERMS.
+
+        Returns the number of markets whose question matches blacklist terms.
+        """
+        non_political = 0
+        for mid in market_ids:
+            question = self.get_market_question(mid)
+            if question is None:
+                continue
+            q_lower = question.lower()
+            if any(term in q_lower for term in config.MARKET_BLACKLIST_TERMS):
+                non_political += 1
+        return non_political
 
     # ── Odds (CLOB API) ────────────────────────────────────
 

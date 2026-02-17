@@ -65,8 +65,9 @@ def _fr(filt: dict, details: str | None = None) -> FilterResult:
 class BehaviorAnalyzer:
     """Evaluates behavior filters on a wallet's trading activity."""
 
-    def __init__(self, db_client=None) -> None:
+    def __init__(self, db_client=None, pm_client=None) -> None:
         self.db = db_client
+        self.pm_client = pm_client
 
     # ── Main entry point ─────────────────────────────────────
 
@@ -390,6 +391,9 @@ class BehaviorAnalyzer:
         B23b (>50%) takes priority over B23a (20-50%). Mutually exclusive.
         Guards: skip when wallet_balance or accum amount < $50 (avoids
         absurd ratios from dust balances or tiny positions).
+
+        Suppressed when real PM total_volume >> USDC balance, indicating
+        the wallet has significant capital beyond its liquid balance.
         """
         if wallet_balance is None or wallet_balance < 50:
             return []
@@ -403,17 +407,37 @@ class BehaviorAnalyzer:
         if position_ratio > 10.0:
             return []
 
+        result: list[FilterResult] = []
         if position_ratio >= config.POSITION_DOMINANT_MIN:
-            return [_fr(
+            result = [_fr(
                 config.FILTER_B23B,
                 f"position={position_ratio:.0%} of ${wallet_balance:,.0f}",
             )]
-        if position_ratio >= config.POSITION_SIGNIFICANT_MIN:
-            return [_fr(
+        elif position_ratio >= config.POSITION_SIGNIFICANT_MIN:
+            result = [_fr(
                 config.FILTER_B23A,
                 f"position={position_ratio:.0%} of ${wallet_balance:,.0f}",
             )]
-        return []
+
+        if not result:
+            return []
+
+        # Suppress if real PM volume >> USDC balance
+        if self.pm_client is not None and wallet_balance > 0:
+            try:
+                history = self.pm_client.get_wallet_pm_history_cached(accum.wallet_address)
+                if history is not None:
+                    total_volume = history.get("total_volume", 0)
+                    if total_volume > wallet_balance * config.ALLIN_VOLUME_SUPPRESS_RATIO:
+                        logger.info(
+                            "B23 suppressed for %s: PM volume=$%,.0f >> balance=$%,.0f",
+                            accum.wallet_address[:10], total_volume, wallet_balance,
+                        )
+                        return []
+            except Exception as e:
+                logger.debug("B23 PM volume check failed for %s: %s", accum.wallet_address[:10], e)
+
+        return result
 
     # ── B25a-c — Odds conviction ─────────────────────────────
 
@@ -577,6 +601,9 @@ class BehaviorAnalyzer:
         Mutually exclusive with B23 — if B28 fires, B23 is suppressed.
         Uses same guards as B23 (skip dust balances/positions, cap ratio).
 
+        Suppressed when real PM total_volume >> USDC balance, indicating
+        the wallet has significant capital beyond its liquid balance.
+
         Tiers:
           B28a: ratio > 90%  (+25)
           B28b: ratio 70-90% (+20)
@@ -594,17 +621,37 @@ class BehaviorAnalyzer:
         if position_ratio > 10.0:
             return []
 
+        result: list[FilterResult] = []
         if position_ratio >= config.ALLIN_EXTREME_MIN:
-            return [_fr(
+            result = [_fr(
                 config.FILTER_B28A,
                 f"all-in {position_ratio:.0%} of ${wallet_balance:,.0f}",
             )]
-        if position_ratio >= config.ALLIN_STRONG_MIN:
-            return [_fr(
+        elif position_ratio >= config.ALLIN_STRONG_MIN:
+            result = [_fr(
                 config.FILTER_B28B,
                 f"all-in {position_ratio:.0%} of ${wallet_balance:,.0f}",
             )]
-        return []
+
+        if not result:
+            return []
+
+        # Suppress if real PM volume >> USDC balance
+        if self.pm_client is not None and wallet_balance > 0:
+            try:
+                history = self.pm_client.get_wallet_pm_history_cached(accum.wallet_address)
+                if history is not None:
+                    total_volume = history.get("total_volume", 0)
+                    if total_volume > wallet_balance * config.ALLIN_VOLUME_SUPPRESS_RATIO:
+                        logger.info(
+                            "B28 suppressed for %s: PM volume=$%,.0f >> balance=$%,.0f",
+                            accum.wallet_address[:10], total_volume, wallet_balance,
+                        )
+                        return []
+            except Exception as e:
+                logger.debug("B28 PM volume check failed for %s: %s", accum.wallet_address[:10], e)
+
+        return result
 
     # ── B30a-c — First mover ──────────────────────────────
 
@@ -764,9 +811,29 @@ class BehaviorAnalyzer:
             return []
         pm_days = (now - first_seen).days
 
-        if pm_days < config.OLD_WALLET_PM_MAX_DAYS:
-            return [_fr(
-                config.FILTER_B20,
-                f"wallet_age={wallet.wallet_age_days}d, pm_activity={pm_days}d",
-            )]
-        return []
+        if pm_days >= config.OLD_WALLET_PM_MAX_DAYS:
+            return []
+
+        # ── Verify against real Polymarket history ──────────────
+        # first_seen only tracks when *our system* first saw the wallet,
+        # not when the wallet actually started trading on PM.  Query the
+        # Data API for the wallet's real trade history to avoid false
+        # positives on veteran PM wallets we haven't seen before.
+        if self.pm_client is not None:
+            try:
+                history = self.pm_client.get_wallet_pm_history_cached(wallet.address)
+                if history is not None:
+                    real_markets = history.get("distinct_markets", 0)
+                    if real_markets > config.OLD_WALLET_PM_MIN_MARKETS:
+                        logger.info(
+                            "B20 suppressed for %s: real PM activity = %d distinct markets",
+                            wallet.address[:10], real_markets,
+                        )
+                        return []
+            except Exception as e:
+                logger.debug("B20 PM history check failed for %s: %s", wallet.address[:10], e)
+
+        return [_fr(
+            config.FILTER_B20,
+            f"wallet_age={wallet.wallet_age_days}d, pm_activity={pm_days}d",
+        )]
