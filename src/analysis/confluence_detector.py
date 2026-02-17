@@ -25,6 +25,7 @@ from collections import defaultdict
 from datetime import datetime, timedelta, timezone
 
 from src import config
+from src.config import KNOWN_INFRASTRUCTURE
 from src.database.models import FilterResult, FundingLink
 from src.scanner.blockchain_client import POLYMARKET_CONTRACTS
 
@@ -64,18 +65,60 @@ class ConfluenceDetector:
         # Senders seen in the last detect() call — used by main.py for
         # cross-market super-sender tracking.
         self.last_senders_seen: set[str] = set()
+        # Cached exclusion set — populated once per scan via
+        # refresh_excluded_senders(), then reused for every market.
+        self._excluded_cache: set[str] | None = None
 
     # ── Sender exclusion ─────────────────────────────────────
 
-    @staticmethod
-    def _build_default_excluded() -> set[str]:
-        """Addresses that should ALWAYS be excluded from sender analysis.
+    def refresh_excluded_senders(self) -> None:
+        """Query DB for high-fanout senders and rebuild the exclusion cache.
 
-        Only Polymarket contracts are excluded — exchanges, bridges, and
-        mixers are intentionally kept because their shared use IS the
-        confluence signal detected by Layer 2 (C03a-c).
+        Call this **once** at the start of each scan cycle.  Individual
+        :meth:`detect` calls will reuse the cached set without hitting
+        the database again.
         """
-        return {a.lower() for a in POLYMARKET_CONTRACTS}
+        excluded = {a.lower() for a in POLYMARKET_CONTRACTS}
+        excluded |= {a.lower() for a in KNOWN_INFRASTRUCTURE}
+
+        # Auto-exclude any sender funding > N distinct wallets
+        threshold = config.SENDER_AUTO_EXCLUDE_MIN_WALLETS
+        try:
+            high_fanout = self.db.get_high_fanout_senders(threshold)
+            if high_fanout:
+                auto = {a.lower() for a in high_fanout}
+                new_auto = auto - excluded
+                if new_auto:
+                    logger.info(
+                        "Auto-excluded %d high-fanout senders (>%d wallets): %s",
+                        len(new_auto),
+                        threshold,
+                        ", ".join(s[:10] + "…" for s in sorted(new_auto)),
+                    )
+                excluded |= auto
+        except Exception as exc:
+            logger.warning("Failed to query high-fanout senders: %s", exc)
+
+        self._excluded_cache = excluded
+
+    def _build_default_excluded(self) -> set[str]:
+        """Return the exclusion set, building it on first use if needed.
+
+        Polymarket contracts and known infrastructure addresses (relay
+        solvers, wrapped-collateral contracts, high-fanout routers) are
+        excluded because they fund hundreds of unrelated wallets and
+        generate false C03d / C07 confluences.
+
+        Senders that fund >= SENDER_AUTO_EXCLUDE_MIN_WALLETS distinct
+        wallets in wallet_funding are also excluded automatically.
+
+        Exchanges, bridges, and mixers are intentionally kept because
+        their shared use IS the confluence signal detected by Layer 2
+        (C03a-c).
+        """
+        if self._excluded_cache is None:
+            self.refresh_excluded_senders()
+        return set(self._excluded_cache)  # return a copy
 
     # ── Main entry point ─────────────────────────────────────
 
@@ -118,7 +161,7 @@ class ConfluenceDetector:
         # Expose raw senders for cross-market tracking
         self.last_senders_seen = set(raw_sender_to_wallets.keys())
 
-        # Filter out only Polymarket contracts and super-senders
+        # Filter out infrastructure, Polymarket contracts, and super-senders
         all_excluded = self._build_default_excluded()
         if excluded_senders:
             all_excluded.update(excluded_senders)

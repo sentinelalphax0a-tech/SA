@@ -346,6 +346,49 @@ class SupabaseClient:
     def delete_funding(self, funding_id: int) -> None:
         self.client.table("wallet_funding").delete().eq("id", funding_id).execute()
 
+    def get_high_fanout_senders(self, min_wallets: int) -> list[str]:
+        """Return sender addresses that fund >= *min_wallets* distinct wallets.
+
+        Uses a Supabase RPC call to ``high_fanout_senders`` if available,
+        otherwise falls back to a client-side aggregation with pagination.
+        """
+        try:
+            resp = self.client.rpc(
+                "high_fanout_senders", {"min_wallets": min_wallets}
+            ).execute()
+            if resp.data:
+                return [r["sender_address"] for r in resp.data]
+        except Exception:
+            logger.debug("RPC high_fanout_senders not available, using fallback")
+
+        # Fallback: paginate wallet_funding and aggregate client-side
+        sender_counts: dict[str, set[str]] = {}
+        page_size = 1000
+        offset = 0
+        while True:
+            resp = (
+                self.client.table("wallet_funding")
+                .select("sender_address,wallet_address")
+                .range(offset, offset + page_size - 1)
+                .execute()
+            )
+            rows = resp.data or []
+            for r in rows:
+                sa = r.get("sender_address")
+                wa = r.get("wallet_address")
+                if sa and wa:
+                    if sa not in sender_counts:
+                        sender_counts[sa] = set()
+                    sender_counts[sa].add(wa)
+            if len(rows) < page_size:
+                break
+            offset += page_size
+
+        return [
+            sender for sender, wallets in sender_counts.items()
+            if len(wallets) >= min_wallets
+        ]
+
     # ── Scans ──────────────────────────────────────────────
 
     def insert_scan(self, scan: Scan) -> None:

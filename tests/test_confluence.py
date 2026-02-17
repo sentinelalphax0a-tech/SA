@@ -24,6 +24,9 @@ class FakeDB:
     def get_funding_sources(self, wallet_address: str) -> list[dict]:
         return self._funding.get(wallet_address, [])
 
+    def get_high_fanout_senders(self, min_wallets: int) -> list[str]:
+        return []
+
 
 def _wallet(address: str, direction: str = "YES") -> dict:
     return {"address": address, "direction": direction}
@@ -557,17 +560,27 @@ class TestNoduplicarCoord04:
 class TestSenderExclusion:
     def test_polymarket_contracts_excluded(self):
         """Polymarket contracts should be excluded from sender analysis."""
-        excluded = ConfluenceDetector._build_default_excluded()
+        detector = ConfluenceDetector(FakeDB())
+        excluded = detector._build_default_excluded()
         from src.scanner.blockchain_client import POLYMARKET_CONTRACTS
         for contract in POLYMARKET_CONTRACTS:
             assert contract.lower() in excluded
 
     def test_exchanges_not_excluded(self):
         """Exchanges should NOT be excluded — their shared use is the C03a signal."""
-        excluded = ConfluenceDetector._build_default_excluded()
+        detector = ConfluenceDetector(FakeDB())
+        excluded = detector._build_default_excluded()
         from src import config
         for exchange_addr in config.KNOWN_EXCHANGES:
             assert exchange_addr.lower() not in excluded
+
+    def test_known_infrastructure_excluded(self):
+        """Known infrastructure addresses should be excluded from sender analysis."""
+        detector = ConfluenceDetector(FakeDB())
+        excluded = detector._build_default_excluded()
+        from src.config import KNOWN_INFRASTRUCTURE
+        for addr in KNOWN_INFRASTRUCTURE:
+            assert addr.lower() in excluded
 
 
 # ── detect_funding_links ─────────────────────────────────────

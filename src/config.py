@@ -451,6 +451,20 @@ KNOWN_BRIDGES: dict[str, str] = {
     "0x2f6f07cdcf3588944bf4c42ac74ff24bf56e7590": "Stargate",
 }
 
+# Known infrastructure addresses on Polygon (relay solvers, wrapped collateral, etc.)
+# These fund hundreds of wallets and trigger false C03d/C07 confluences.
+KNOWN_INFRASTRUCTURE: dict[str, str] = {
+    "0xf70da97812cb96acdf810712aa562db8dfa3dbef": "Relay Solver (Polygon)",
+    "0x3a3bd7bb9528e159577f7c2e685cc81a765002e2": "Polymarket Wrapped Collateral",
+    "0xc288480574783bd7615170660d71753378159c47": "Bridge/router Polygon",
+}
+
+# Safety net: any sender that funds more than this many distinct wallets
+# in wallet_funding is auto-excluded from confluence analysis.
+SENDER_AUTO_EXCLUDE_MIN_WALLETS: int = int(
+    os.getenv("SENDER_AUTO_EXCLUDE_MIN_WALLETS", "100")
+)
+
 # ============================================================
 # SCORING — NEW SYSTEM (replaces old multiplier patterns)
 # ============================================================

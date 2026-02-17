@@ -554,6 +554,7 @@ def run_scan(
         noise_filter = NoiseFilter(news_checker=news, db_client=db)
         arb_filter = ArbitrageFilter(db_client=db)
         confluence_detector = ConfluenceDetector(db_client=db)
+        confluence_detector.refresh_excluded_senders()
         twitter = TwitterBot()
         telegram = TelegramBot()
     except Exception as e:
