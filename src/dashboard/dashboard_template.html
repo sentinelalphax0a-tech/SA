@@ -583,6 +583,7 @@ function starEmoji(level) {
 
 function truncAddr(addr) {
     if (!addr || addr.length < 10) return addr || '';
+    if (HAS_ACCESS) return addr;
     return addr.slice(0, 6) + '...' + addr.slice(-4);
 }
 
@@ -976,7 +977,7 @@ function renderSellActivity() {
 
     for (const e of items.slice(0, 20)) {
         const addr = e.wallet_address || '';
-        const shortAddr = addr.length > 10 ? addr.slice(0, 6) + '...' + addr.slice(-4) : addr;
+        const shortAddr = truncAddr(addr);
         const pnl = e.pnl_pct != null ? (e.pnl_pct >= 0 ? '+' : '') + e.pnl_pct.toFixed(1) + '%' : '--';
         const pnlCls = e.pnl_pct != null && e.pnl_pct >= 0 ? 'pnl-positive' : 'pnl-negative';
         const held = e.held_hours != null ? e.held_hours.toFixed(0) + 'h' : '--';
