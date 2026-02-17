@@ -552,6 +552,10 @@ const ALERTS_DATA = /* __ALERTS_DATA__ */;
 const STATS = /* __STATS_DATA__ */;
 const GENERATED_AT = "/* __GENERATED_AT__ */";
 
+// ── Access Control ───────────────────────────────────
+const ACCESS_KEY = 'sentinel2026';
+const HAS_ACCESS = new URLSearchParams(window.location.search).get('key') === ACCESS_KEY;
+
 // ── State ────────────────────────────────────────────
 const state = {
     starFilter: new Set([1, 2, 3, 4, 5]),
@@ -719,6 +723,30 @@ function renderTable() {
 }
 
 function renderDetail(a) {
+    const wallets = a.wallets || [];
+
+    // ── Restricted view (no key) ─────────────────────
+    if (!HAS_ACCESS) {
+        let walletsHtml = '';
+        for (const w of wallets.slice(0, 5)) {
+            walletsHtml += `
+            <div class="wallet-card">
+                <div class="wallet-addr">${truncAddr(w.address || '')}</div>
+                <div class="wallet-meta">Total: $${(w.total_amount || 0).toLocaleString()}</div>
+            </div>`;
+        }
+        if (wallets.length > 5) {
+            walletsHtml += `<p style="color:var(--text-secondary);font-size:0.85rem">+${wallets.length - 5} more wallets</p>`;
+        }
+
+        return `
+        <div class="detail-section">
+            <h4>Wallets (${wallets.length})</h4>
+            ${walletsHtml || '<p class="empty-state">No wallet data</p>'}
+        </div>`;
+    }
+
+    // ── Full view (valid key) ────────────────────────
     // Filters
     const filters = a.filters_triggered || [];
     let filtersHtml = '<ul class="filter-list">';
@@ -731,8 +759,7 @@ function renderDetail(a) {
     }
     filtersHtml += '</ul>';
 
-    // Wallets
-    const wallets = a.wallets || [];
+    // Wallets (full)
     let walletsHtml = '';
     for (const w of wallets.slice(0, 5)) {
         const addr = w.address || '';
@@ -910,20 +937,26 @@ function renderCharts() {
         });
     }
 
-    // 4. Filter distribution
-    const filterData = STATS.filter_distribution || [];
-    if (filterData.length > 0) {
-        new Chart(document.getElementById('chart-filters'), {
-            type: 'bar',
-            data: {
-                labels: filterData.map(d => d.filter_id + ' ' + d.name),
-                datasets: [
-                    { label: 'Correct', data: filterData.map(d => d.correct), backgroundColor: '#3fb950' },
-                    { label: 'Incorrect', data: filterData.map(d => d.incorrect), backgroundColor: '#f85149' },
-                ],
-            },
-            options: { ...chartDefaults, indexAxis: 'y' },
-        });
+    // 4. Filter distribution (only with access key — shows filter IDs)
+    if (HAS_ACCESS) {
+        const filterData = STATS.filter_distribution || [];
+        if (filterData.length > 0) {
+            new Chart(document.getElementById('chart-filters'), {
+                type: 'bar',
+                data: {
+                    labels: filterData.map(d => d.filter_id + ' ' + d.name),
+                    datasets: [
+                        { label: 'Correct', data: filterData.map(d => d.correct), backgroundColor: '#3fb950' },
+                        { label: 'Incorrect', data: filterData.map(d => d.incorrect), backgroundColor: '#f85149' },
+                    ],
+                },
+                options: { ...chartDefaults, indexAxis: 'y' },
+            });
+        }
+    } else {
+        // Hide the filter chart container entirely
+        const filterCanvas = document.getElementById('chart-filters');
+        if (filterCanvas) filterCanvas.closest('.chart-card').style.display = 'none';
     }
 }
 
