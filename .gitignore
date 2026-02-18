@@ -6,3 +6,4 @@ __pycache__/
 .env.save
 .vscode/
 .DS_Store
+health_reports/
