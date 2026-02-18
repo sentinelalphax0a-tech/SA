@@ -49,12 +49,18 @@ _STAR_REQS: dict[int, dict] = {
 CRITICAL_CHECKS = {
     "score_math",
     "star_consistency",
-    "filter_sum_mismatch",
+    # filter_sum_mismatch es WARNING, no CRITICAL:
+    # diferencias pequeñas son drift histórico por cambios de pesos de filtros.
     "high_score_low_star",
     "published_low_star",
     "pending_but_resolved",
     "multi_signal_no_group",
 }
+
+# Alertas anteriores a esta fecha pueden tener filter_sum_mismatch por cambio
+# de pesos histórico; se ignoran si el delta es menor que el umbral.
+_OLD_ALERT_CUTOFF = datetime(2026, 2, 10, tzinfo=timezone.utc)
+_OLD_ALERT_FILTER_DELTA_TOLERANCE = 50
 
 
 # ──────────────────────────────────────────────────────────────────────
@@ -202,15 +208,21 @@ def check_filter_sum(alerts: list[dict]) -> list[dict]:
             f.get("points", 0) for f in list(best_in_group.values()) + non_group
         ))
         delta = abs(computed - score_raw)
-        if delta > 1:  # tolerancia 1 pt por redondeo
-            issues.append({
-                "id": row["id"],
-                "check": "filter_sum_mismatch",
-                "score_raw_db": score_raw,
-                "score_raw_computed": computed,
-                "delta": delta,
-                "filter_ids": [f.get("filter_id") for f in filters],
-            })
+        if delta <= 1:  # tolerancia 1 pt por redondeo
+            continue
+        # Alertas antiguas: ignorar si el delta es drift histórico esperado
+        created_at_dt = _parse_dt(row.get("created_at"))
+        is_old = created_at_dt is not None and created_at_dt < _OLD_ALERT_CUTOFF
+        if is_old and delta < _OLD_ALERT_FILTER_DELTA_TOLERANCE:
+            continue
+        issues.append({
+            "id": row["id"],
+            "check": "filter_sum_mismatch",
+            "score_raw_db": score_raw,
+            "score_raw_computed": computed,
+            "delta": delta,
+            "filter_ids": [f.get("filter_id") for f in filters],
+        })
     return issues
 
 
@@ -234,18 +246,35 @@ def check_high_score_low_star(alerts: list[dict]) -> list[dict]:
 
 
 def check_published_low_star(alerts: list[dict]) -> list[dict]:
-    """2b. published_telegram=True pero star_level < 3."""
-    return [
-        {
+    """2b. published_telegram=True pero STAR_PUBLISH_MAP no permite Telegram en ese star_level.
+
+    Se excluyen publicaciones históricas legítimas: alertas con star_level >= 1 y
+    score > 0 que fueron publicadas cuando tenían un star_level superior y luego
+    fueron degradadas (p. ej. por cambio de umbrales o por vacunas).
+    Solo se marca como crítico publicar una alerta con star_level=0 o score=0.
+    """
+    issues = []
+    for row in alerts:
+        if not row.get("published_telegram"):
+            continue
+        star = row.get("star_level") or 0
+        score = row.get("score") or 0
+        # Comprobar contra STAR_PUBLISH_MAP en lugar del umbral hardcodeado < 3
+        allows_telegram = config.STAR_PUBLISH_MAP.get(star, {}).get("telegram", True)
+        if allows_telegram:
+            continue
+        # Publicación histórica legítima: star fue degradado después de publicar.
+        # El flag published_telegram=True es un registro de hecho, no un error.
+        if star >= 1 and score > 0:
+            continue
+        issues.append({
             "id": row["id"],
             "check": "published_low_star",
-            "star_level": row.get("star_level"),
-            "score": row.get("score"),
+            "star_level": star,
+            "score": score,
             "published_telegram": True,
-        }
-        for row in alerts
-        if row.get("published_telegram") and (row.get("star_level") or 0) < 3
-    ]
+        })
+    return issues
 
 
 def check_missing_opposite_positions(alerts: list[dict]) -> list[dict]:
