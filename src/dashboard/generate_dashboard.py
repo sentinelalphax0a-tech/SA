@@ -7,8 +7,10 @@ and generates a self-contained HTML dashboard at docs/index.html.
 Executable as: python -m src.dashboard.generate_dashboard
 """
 
+import hashlib
 import json
 import logging
+import os
 from collections import defaultdict
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -446,11 +448,13 @@ def build_html(
     stats_json: str,
     last_updated: str,
     template: str,
+    access_key_hash: str = "",
 ) -> str:
     """Inject data into the HTML template."""
     html = template.replace("/* __ALERTS_DATA__ */", alerts_json)
     html = html.replace("/* __STATS_DATA__ */", stats_json)
     html = html.replace("/* __GENERATED_AT__ */", last_updated)
+    html = html.replace("/* __ACCESS_KEY_HASH__ */", access_key_hash)
     return html
 
 
@@ -483,7 +487,10 @@ def generate(output_dir: Path | None = None) -> Path:
     alerts_json = json.dumps(enriched, default=str)
     stats_json = json.dumps(stats, default=str)
 
-    html = build_html(alerts_json, stats_json, last_updated, template)
+    raw_key = os.environ.get("DASHBOARD_ACCESS_KEY", "")
+    access_key_hash = hashlib.sha256(raw_key.encode()).hexdigest() if raw_key else ""
+
+    html = build_html(alerts_json, stats_json, last_updated, template, access_key_hash=access_key_hash)
 
     out = output_dir or OUTPUT_DIR
     out.mkdir(parents=True, exist_ok=True)

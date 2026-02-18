@@ -553,8 +553,21 @@ const STATS = /* __STATS_DATA__ */;
 const GENERATED_AT = "/* __GENERATED_AT__ */";
 
 // ── Access Control ───────────────────────────────────
-const ACCESS_KEY = 'sentinel2026';
-const HAS_ACCESS = new URLSearchParams(window.location.search).get('key') === ACCESS_KEY;
+// La clave NUNCA se almacena aquí. Solo su SHA-256, inyectado en build desde
+// el GitHub Secret DASHBOARD_ACCESS_KEY. El navegador hashea la clave introducida
+// por el usuario y compara contra este hash — imposible revertir el hash.
+const ACCESS_KEY_HASH = '/* __ACCESS_KEY_HASH__ */';
+let HAS_ACCESS = false;
+
+async function _sha256hex(str) {
+    const buf = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(str));
+    return Array.from(new Uint8Array(buf)).map(b => b.toString(16).padStart(2, '0')).join('');
+}
+
+async function _initAccess() {
+    const provided = new URLSearchParams(window.location.search).get('key') || '';
+    if (provided) HAS_ACCESS = (await _sha256hex(provided)) === ACCESS_KEY_HASH;
+}
 
 // ── State ────────────────────────────────────────────
 const state = {
@@ -1112,7 +1125,8 @@ function setupEventListeners() {
 }
 
 // ── Init ─────────────────────────────────────────────
-document.addEventListener('DOMContentLoaded', () => {
+document.addEventListener('DOMContentLoaded', async () => {
+    await _initAccess();
     renderHeader();
     renderTable();
     renderStarCards();

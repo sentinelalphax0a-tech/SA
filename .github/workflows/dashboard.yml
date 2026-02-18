@@ -30,6 +30,7 @@ jobs:
           SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHANNEL_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          DASHBOARD_ACCESS_KEY: ${{ secrets.DASHBOARD_ACCESS_KEY }}
         run: python -m src.dashboard.generate_dashboard
 
       - name: Commit and push dashboard
