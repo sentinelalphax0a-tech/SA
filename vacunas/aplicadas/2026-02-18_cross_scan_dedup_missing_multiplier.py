@@ -17,14 +17,14 @@ Bug que corrige: El bloque de upgrade del cross-scan dedup actualizaba
 Tablas afectadas: alerts
 Filas estimadas a modificar: 1 confirmada + potencialmente más (scan completo)
 Reversible: NO — recálculo in-place. Los valores originales se pierden.
-Aplicada en producción: NO
+Aplicada en producción: SI
 Commit que introdujo el fix en código: (este commit)
 ============================================================
 
 Resultado de ejecución:
-  - Fecha ejecución: (completar tras ejecución)
-  - Filas modificadas: (completar tras ejecución)
-  - Observaciones: (completar tras ejecución)
+  - Fecha ejecución: 2026-02-18
+  - Filas modificadas: 1
+  - Observaciones: id=689 multiplier 1.8100→1.9217. Verificación OK (0 restantes).
 """
 
 import logging
@@ -42,7 +42,7 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-DRY_RUN = True
+DRY_RUN = False
 
 PAGE_SIZE = 500
 

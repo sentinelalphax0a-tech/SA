@@ -18,14 +18,14 @@ Bug que corrige: Alertas creadas con el sistema antiguo de estrellas
 Tablas afectadas: alerts
 Filas estimadas a modificar: 4
 Reversible: NO — recálculo in-place. Los valores originales se pierden.
-Aplicada en producción: NO
+Aplicada en producción: SI
 Commit que introdujo el fix en código: N/A (bug de datos históricos)
 ============================================================
 
 Resultado de ejecución:
-  - Fecha ejecución: (completar tras ejecución)
-  - Filas modificadas: (completar tras ejecución)
-  - Observaciones: (completar tras ejecución)
+  - Fecha ejecución: 2026-02-18
+  - Filas modificadas: 4
+  - Observaciones: 649→3★, 845→3★, 1066→3★, 1468→4★. Verificación OK (0 errores).
 """
 
 import logging
@@ -40,7 +40,7 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-DRY_RUN = True
+DRY_RUN = False
 
 # Correcciones a aplicar: {alert_id: (star_level_actual_esperado, nuevo_star_level)}
 CORRECTIONS: dict[int, tuple[int, int]] = {
