@@ -16,7 +16,7 @@ Commit que introdujo el fix en código: (este commit)
 
 Resultado de ejecución:
   - Fecha ejecución: 2026-02-18
-  - Filas modificadas: (completar tras ejecución)
+  - Filas modificadas: 36
   - Observaciones: El script recalcula star_level a partir del score actual
     (campo `score`) usando los umbrales NEW_STAR_THRESHOLDS de config.py.
     score_raw se actualiza a score/multiplier redondeado, donde multiplier

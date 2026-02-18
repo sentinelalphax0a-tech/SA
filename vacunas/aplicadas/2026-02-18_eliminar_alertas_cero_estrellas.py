@@ -16,11 +16,12 @@ Commit que introdujo el fix en código: (este commit)
 
 Resultado de ejecución:
   - Fecha ejecución: 2026-02-18
-  - Filas eliminadas alerts: (completar tras ejecución)
-  - Filas eliminadas alert_tracking: (completar tras ejecución)
-  - Filas eliminadas wallet_positions: (completar tras ejecución)
+  - Filas eliminadas alerts: 375
+  - Filas eliminadas alert_tracking: 46
+  - Filas eliminadas wallet_positions: 43
   - Observaciones: Script ejecutado con DRY_RUN=True primero para confirmar
     el recuento. Luego ejecutado con DRY_RUN=False con confirmación manual.
+    Verificación post-ejecución: 0 alertas 0★ restantes.
 """
 
 import logging
