@@ -35,7 +35,7 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-DRY_RUN = True
+DRY_RUN = False
 
 # Los tres filtros que formaban el triple-counting
 TRIPLE_FILTERS = {"B14", "B18d", "B19b"}

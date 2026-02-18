@@ -32,6 +32,7 @@ Un script Python que corrige datos en Supabase como consecuencia de un bug en el
 | 2026-02-18 | `aplicadas/2026-02-18_cross_scan_dedup_score_inconsistency.py` | Cross-scan dedup actualizaba `score` sin actualizar `score_raw`/`star_level`: 10 alertas con campos inconsistentes | 10 alertas | manual | NO |
 | 2026-02-18 | `aplicadas/2026-02-18_star_level_downgrade_amount_validation.py` | Alertas históricas con star_level inflado por sistema antiguo (sin requisito de importe mínimo): 4★ requiere $5k, 5★ requiere $10k | 4 alertas (649, 845, 1066, 1468) | manual | NO |
 | 2026-02-18 | `aplicadas/2026-02-18_cross_scan_dedup_missing_multiplier.py` | Cross-scan dedup actualizaba score/score_raw/star_level pero no `multiplier`: score ≠ round(score_raw × multiplier) cuando el importe cambió entre scans | 1 alerta (id=689) | manual | NO |
+| 2026-02-19 | `aplicadas/2026-02-19_star_level_downgrade_persistence_bug.py` | Bug de persistencia histórico: filters_triggered solo guardaba market filters, omitiendo wallet/behavior/confluence → star_level inflado respecto a categorías verificables | 2 alertas (580: 5★→4★, 631: 5★→2★) | manual | NO |
 
 ---
 

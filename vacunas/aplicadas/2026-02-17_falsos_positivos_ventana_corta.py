@@ -42,7 +42,7 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-DRY_RUN = True
+DRY_RUN = False
 
 # Filtros que dependen de la ventana de lookback y pueden ser falsos positivos
 LOOKBACK_DEPENDENT_FILTERS = {"W04", "W05", "W09", "B20", "B23", "B28", "N06"}

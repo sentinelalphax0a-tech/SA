@@ -39,7 +39,7 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-DRY_RUN = True
+DRY_RUN = False
 
 PAGE_SIZE = 500
 

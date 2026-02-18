@@ -37,7 +37,7 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-DRY_RUN = True
+DRY_RUN = False
 
 # Ventana donde el bug de inversión estaba activo
 BUG_START = datetime(2026, 2, 15, 0, 0, 0, tzinfo=timezone.utc)   # commit d14876d

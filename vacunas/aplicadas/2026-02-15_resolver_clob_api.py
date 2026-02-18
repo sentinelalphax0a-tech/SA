@@ -34,7 +34,7 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-DRY_RUN = True
+DRY_RUN = False
 
 # El mercado Biden 2020 que la Gamma API retornaba erróneamente
 BOGUS_MARKET_CONDITION_ID = "0x4d6b5d5b6a7d8e9f0a1b2c3d4e5f6a7b"  # placeholder

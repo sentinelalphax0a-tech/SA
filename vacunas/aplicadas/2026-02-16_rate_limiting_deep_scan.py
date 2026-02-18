@@ -36,7 +36,7 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-DRY_RUN = True
+DRY_RUN = False
 
 # Fecha del fix de rate limiting
 FIX_DATE = datetime(2026, 2, 16, tzinfo=timezone.utc)
