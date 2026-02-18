@@ -279,7 +279,7 @@ class SupabaseClient:
         ).isoformat()
         resp = (
             self.client.table("alerts")
-            .select("id,market_id,direction,wallets,odds_at_alert,total_amount,score")
+            .select("id,market_id,direction,wallets,odds_at_alert,total_amount,score,score_raw,star_level")
             .eq("market_id", market_id)
             .eq("direction", direction)
             .gte("created_at", cutoff)

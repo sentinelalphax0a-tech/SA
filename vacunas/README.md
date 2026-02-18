@@ -28,6 +28,8 @@ Un script Python que corrige datos en Supabase como consecuencia de un bug en el
 | 2026-02-16 | `aplicadas/2026-02-16_dashboard_precio_entrada.py` | Dashboard: precio de entrada del primer trade disponible en vez del wallet principal + estrellas sobre score_raw | Todas las alertas en dashboard | manual | NO aplica (dashboard se regenera) |
 | 2026-02-17 | `aplicadas/2026-02-17_falsa_confluencia_infra.py` | Falsa confluencia por senders de infraestructura (Relay Solver, wrapped collateral) detectados como C03d/C07 | Alertas con C03d/C07 de senders infra | manual | Parcial (ver script) |
 | 2026-02-17 | `aplicadas/2026-02-17_falsos_positivos_ventana_corta.py` | Falsos positivos por dependencia de ventana de 35 min: W04/W05/W09/B20/B23/B28/N06 disparados sobre wallets con historial real en PM | 342 alertas | manual | NO |
+| 2026-02-18 | `aplicadas/2026-02-18_eliminar_alertas_cero_estrellas.py` | Eliminar ~375 alertas con star_level=0 acumuladas antes del gate 0★ en main.py | ~375 alertas + dependencias FK | manual | NO |
+| 2026-02-18 | `aplicadas/2026-02-18_cross_scan_dedup_score_inconsistency.py` | Cross-scan dedup actualizaba `score` sin actualizar `score_raw`/`star_level`: 10 alertas con campos inconsistentes | 10 alertas | manual | NO |
 
 ---
 

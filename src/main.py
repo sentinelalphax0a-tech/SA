@@ -251,13 +251,13 @@ def _get_primary_wallet(alert: Alert) -> str | None:
 
 def _check_cross_scan_duplicate(
     alert: Alert, db: SupabaseClient
-) -> int | None:
+) -> tuple[int, int] | None:
     """Check if a cross-scan duplicate exists in the DB.
 
     Looks for an alert with the same market_id, direction, and primary
     wallet address created within the last CROSS_SCAN_DEDUP_HOURS hours.
 
-    Returns the existing alert's `id` if a duplicate is found, None otherwise.
+    Returns (existing_id, existing_score) if a duplicate is found, None otherwise.
     """
     primary_wallet = _get_primary_wallet(alert)
     if not primary_wallet:
@@ -278,7 +278,7 @@ def _check_cross_scan_duplicate(
             key=lambda w: w.get("total_amount", 0),
         )
         if existing_primary.get("address") == primary_wallet:
-            return existing.get("id")
+            return existing.get("id"), existing.get("score", 0)
 
     return None
 
@@ -701,6 +701,15 @@ def run_scan(
                     counters["alerts_generated"] += 1
                     continue
 
+                # 0★ gate: discard alerts with no star rating
+                if (alert.star_level or 0) < 1:
+                    logger.debug(
+                        "Skipping 0★ alert for %s %s",
+                        alert.direction,
+                        alert.market_id[:12],
+                    )
+                    continue
+
                 # 8a. Within-scan dedup: still insert, but skip publish
                 if alert.deduplicated:
                     if dry_run:
@@ -718,14 +727,20 @@ def run_scan(
                     continue
 
                 # 8b. Cross-scan dedup: check for existing alert in last 24h
-                existing_id = _check_cross_scan_duplicate(alert, db) if not dry_run else None
-                if existing_id is not None:
-                    db.update_alert_fields(existing_id, {
+                existing_result = _check_cross_scan_duplicate(alert, db) if not dry_run else None
+                if existing_result is not None:
+                    existing_id, existing_score = existing_result
+                    update_fields: dict = {
                         "odds_at_alert": alert.odds_at_alert,
                         "total_amount": alert.total_amount,
-                        "score": alert.score,
                         "wallets": alert.wallets,
-                    })
+                    }
+                    # Only upgrade scoring fields — never downgrade a published alert
+                    if (alert.score or 0) > (existing_score or 0):
+                        update_fields["score"] = alert.score
+                        update_fields["score_raw"] = alert.score_raw
+                        update_fields["star_level"] = alert.star_level
+                    db.update_alert_fields(existing_id, update_fields)
                     alert.deduplicated = True
                     counters["alerts_cross_scan_dedup"] += 1
                     logger.info(
