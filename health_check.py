@@ -158,7 +158,7 @@ def check_star_consistency(alerts: list[dict]) -> list[dict]:
         violations = []
         if score < reqs.get("min_score", 0):
             violations.append(f"score={score} < min={reqs['min_score']}")
-        if amount < reqs.get("min_amount", 0):
+        if round(amount) < reqs.get("min_amount", 0):
             violations.append(f"total_amount={amount:.0f} < min={reqs['min_amount']}")
         if violations:
             issues.append({
