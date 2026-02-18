@@ -31,6 +31,7 @@ import os
 import sys
 
 from src import config
+from src.analysis.scoring import SCORE_CAP
 from src.database.supabase_client import SupabaseClient
 
 logging.basicConfig(
@@ -39,7 +40,7 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-DRY_RUN = True
+DRY_RUN = False
 
 PAGE_SIZE = 500
 
@@ -86,7 +87,7 @@ def diagnostico(db: SupabaseClient) -> list[dict]:
             star_level = row.get("star_level")
 
             # Calcular el score_final esperado desde score_raw × multiplier
-            expected_score = min(round(score_raw * multiplier), config.SCORE_CAP)
+            expected_score = min(round(score_raw * multiplier), SCORE_CAP)
             delta = abs(score - expected_score)
 
             # También detectar star_level inconsistente con el score actual
@@ -154,11 +155,6 @@ def correccion(db: SupabaseClient, filas: list[dict]) -> int:
             db.client.table("alerts").update({
                 "score_raw": new_score_raw,
                 "star_level": new_stars,
-                "notes": (
-                    f"[vacuna 2026-02-18] cross_scan_dedup_fix: "
-                    f"score_raw {fila.get('score_raw')}→{new_score_raw}, "
-                    f"star_level {fila.get('star_level')}→{new_stars}"
-                ),
             }).eq("id", fila["id"]).execute()
             modificadas += 1
 
@@ -180,13 +176,11 @@ def verificacion(db: SupabaseClient) -> None:
 
 
 def main() -> None:
-    supabase_url = os.environ.get("SUPABASE_URL")
-    supabase_key = os.environ.get("SUPABASE_KEY")
-    if not supabase_url or not supabase_key:
+    if not os.environ.get("SUPABASE_URL") or not os.environ.get("SUPABASE_KEY"):
         logger.error("SUPABASE_URL y SUPABASE_KEY deben estar definidas.")
         sys.exit(1)
 
-    db = SupabaseClient(supabase_url, supabase_key)
+    db = SupabaseClient()
 
     filas = diagnostico(db)
     if not filas:

@@ -35,7 +35,7 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-DRY_RUN = True
+DRY_RUN = False
 
 PAGE_SIZE = 500
 
@@ -167,13 +167,11 @@ def verificacion(db: SupabaseClient) -> None:
 
 
 def main() -> None:
-    supabase_url = os.environ.get("SUPABASE_URL")
-    supabase_key = os.environ.get("SUPABASE_KEY")
-    if not supabase_url or not supabase_key:
+    if not os.environ.get("SUPABASE_URL") or not os.environ.get("SUPABASE_KEY"):
         logger.error("SUPABASE_URL y SUPABASE_KEY deben estar definidas.")
         sys.exit(1)
 
-    db = SupabaseClient(supabase_url, supabase_key)
+    db = SupabaseClient()
 
     alert_ids = diagnostico(db)
     if not alert_ids:
