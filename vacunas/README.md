@@ -31,6 +31,7 @@ Un script Python que corrige datos en Supabase como consecuencia de un bug en el
 | 2026-02-18 | `aplicadas/2026-02-18_eliminar_alertas_cero_estrellas.py` | Eliminar ~375 alertas con star_level=0 acumuladas antes del gate 0★ en main.py | ~375 alertas + dependencias FK | manual | NO |
 | 2026-02-18 | `aplicadas/2026-02-18_cross_scan_dedup_score_inconsistency.py` | Cross-scan dedup actualizaba `score` sin actualizar `score_raw`/`star_level`: 10 alertas con campos inconsistentes | 10 alertas | manual | NO |
 | 2026-02-18 | `2026-02-18_star_level_downgrade_amount_validation.py` | Alertas históricas con star_level inflado por sistema antiguo (sin requisito de importe mínimo): 4★ requiere $5k, 5★ requiere $10k | 4 alertas (649, 845, 1066, 1468) | **PENDIENTE** | NO |
+| 2026-02-18 | `2026-02-18_cross_scan_dedup_missing_multiplier.py` | Cross-scan dedup actualizaba score/score_raw/star_level pero no `multiplier`: score ≠ round(score_raw × multiplier) cuando el importe cambió entre scans | 1 alerta confirmada (id=689) | **PENDIENTE** | NO |
 
 ---
 

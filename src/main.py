@@ -740,6 +740,7 @@ def run_scan(
                         update_fields["score"] = alert.score
                         update_fields["score_raw"] = alert.score_raw
                         update_fields["star_level"] = alert.star_level
+                        update_fields["multiplier"] = alert.multiplier
                     db.update_alert_fields(existing_id, update_fields)
                     alert.deduplicated = True
                     counters["alerts_cross_scan_dedup"] += 1
