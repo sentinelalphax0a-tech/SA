@@ -33,6 +33,8 @@ Un script Python que corrige datos en Supabase como consecuencia de un bug en el
 | 2026-02-18 | `aplicadas/2026-02-18_star_level_downgrade_amount_validation.py` | Alertas históricas con star_level inflado por sistema antiguo (sin requisito de importe mínimo): 4★ requiere $5k, 5★ requiere $10k | 4 alertas (649, 845, 1066, 1468) | manual | NO |
 | 2026-02-18 | `aplicadas/2026-02-18_cross_scan_dedup_missing_multiplier.py` | Cross-scan dedup actualizaba score/score_raw/star_level pero no `multiplier`: score ≠ round(score_raw × multiplier) cuando el importe cambió entre scans | 1 alerta (id=689) | manual | NO |
 | 2026-02-19 | `aplicadas/2026-02-19_star_level_downgrade_persistence_bug.py` | Bug de persistencia histórico: filters_triggered solo guardaba market filters, omitiendo wallet/behavior/confluence → star_level inflado respecto a categorías verificables | 2 alertas (580: 5★→4★, 631: 5★→2★) | manual | NO |
+| 2026-02-19 | `aplicadas/2026-02-19_odds_boundary_pending.py` | 436 alertas con outcome=pending y odds_max/min=1.0: resolver normal requiere closed=True de API pero Polymarket mantiene active=True — fix en resolver.py + vacuna retroactiva | 436 alertas → todas correct (avg +32.5%) | manual | NO |
+| 2026-02-19 | `aplicadas/2026-02-19_delete_historical_noise_alerts.py` | Eliminar alertas 340/580/631/649: daño histórico de persistencia irrecuperable (score_raw vs computed delta 14-216 pts) — ruido para ML | 17 filas (4 alerts + 9 wallet_positions + 4 alert_tracking) | manual | NO |
 
 ---
 

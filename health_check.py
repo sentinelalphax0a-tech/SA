@@ -339,7 +339,27 @@ def check_zero_star(alerts: list[dict]) -> list[dict]:
 # ──────────────────────────────────────────────────────────────────────
 
 def check_same_scan_similar_amounts(alerts: list[dict]) -> list[dict]:
-    """3a. Pares mismo mercado+dirección, ±5 min, wallets distintas, monto ±10%."""
+    """3a. Pares mismo mercado+dirección, ±5 min, wallets distintas, monto ±10%.
+
+    NOTA DE INTERPRETACIÓN (2026-02-19):
+    Los pares reportados aquí son en su mayoría alertas PRIMARIA + SECUNDARIA
+    legítimas: el confluence_detector encontró dos grupos de wallets distintos
+    en el mismo mercado dentro del mismo scan. La primaria se publica; la
+    secundaria (is_secondary=True) se guarda en DB pero NO se publica.
+    Esto NO es un bug — es el comportamiento esperado del sistema.
+
+    Para ML: excluir alertas con is_secondary=True del training set.
+    Los pares primaria/secundaria sobre el mismo mercado son señal de
+    coordinación no detectada entre grupos independientes y deben
+    estudiarse por separado.
+
+    ADVERTENCIA antes de cualquier agrupación futura de wallets similares:
+    Verificar que las wallets NO sean direcciones de exchange (Coinbase,
+    Binance, OKX, etc.) ni contratos de bridge de Polygon (Polygon PoS Bridge,
+    Stargate, Hop, etc.). Esas addresses tienen volúmenes similares por
+    naturaleza del flujo de fondos y agruparlas generaría falsos positivos
+    graves. Ver config.KNOWN_EXCHANGES y config.KNOWN_BRIDGES.
+    """
     # Agrupar por market_id+direction
     groups: dict[str, list[dict]] = defaultdict(list)
     for row in alerts:
