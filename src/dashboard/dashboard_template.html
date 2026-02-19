@@ -198,6 +198,8 @@
         .badge-incorrect { background: rgba(248, 81, 73, 0.15); color: var(--red); }
         .badge-merge-confirmed { background: rgba(240, 136, 62, 0.2); color: var(--star-4); }
         .badge-merge-suspected { background: rgba(210, 153, 34, 0.2); color: var(--yellow); }
+        .badge-held       { background: rgba(63, 185, 80, 0.15); color: var(--green); }
+        .badge-sold-early { background: rgba(210, 153, 34, 0.15); color: var(--yellow); }
 
         .market-question {
             max-width: 300px;
@@ -628,6 +630,8 @@ function renderHeader() {
         <div class="stat-card">
             <div class="stat-value stat-yellow">${s.accuracy_3plus != null ? s.accuracy_3plus + '%' : '--'}</div>
             <div class="stat-label">Accuracy 3+&#9733;${s.merge_confirmed_count ? `<br><small style="color:var(--star-4)">${s.merge_confirmed_count} merge excl.</small>` : ''}</div>
+            ${s.accuracy_3plus_held != null ? `<div style="font-size:0.7rem;color:var(--green);margin-top:0.2rem">Held: ${s.accuracy_3plus_held}%</div>` : ''}
+            ${s.accuracy_3plus_sold_early != null ? `<div style="font-size:0.7rem;color:var(--text-secondary);margin-top:0.1rem">Sold early: ${s.accuracy_3plus_sold_early}%</div>` : ''}
         </div>
         <div class="stat-card">
             <div class="stat-value stat-red">${s.alerts_with_sells || 0}</div>
@@ -720,8 +724,16 @@ function renderTable() {
             changeHtml = `<span class="${cls}">${sign}${a.odds_change_pct.toFixed(1)}%</span>`;
         }
 
-        // Time column
-        const timeCol = outcome === 'pending' ? (a.time_left || a.time_ago || '') : 'Resolved';
+        // Time column — show hold indicator for resolved alerts
+        let timeCol;
+        if (outcome === 'pending') {
+            timeCol = a.time_left || a.time_ago || '';
+        } else if (a.hold_label) {
+            const holdCls = a.hold_label === 'held' ? 'badge-held' : 'badge-sold-early';
+            timeCol = `<span class="status-badge ${holdCls}">${a.hold_display}</span>`;
+        } else {
+            timeCol = 'Resolved';
+        }
 
         html += `
         <tr class="${rowCls}" onclick="toggleRow(${id})" data-id="${id}">

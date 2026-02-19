@@ -532,6 +532,7 @@ def run_scan(
         post_scan_check: If True, run net position check after scan to detect
                          CTF merges, transfers, burns (invisible to CLOB API).
                          Skipped automatically in GitHub Actions.
+                         Also runs automatically when mode="deep" (local only).
     """
     # Suppress noisy HTTP client logging
     logging.getLogger("httpx").setLevel(logging.WARNING)
@@ -843,8 +844,9 @@ def run_scan(
                 if sell_events:
                     logger.info("Sell monitoring: %d CLOB sell events detected", len(sell_events))
 
-                # Post-scan net position check (detects CTF merges, transfers, burns)
-                if post_scan_check:
+                # Post-scan net position check (detects CTF merges, transfers, burns).
+                # Runs when explicitly requested OR automatically in deep mode (local, no CI guard).
+                if post_scan_check or mode == "deep":
                     try:
                         net_events = sell_detector.check_net_positions()
                         for event in net_events:

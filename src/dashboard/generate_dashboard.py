@@ -58,12 +58,33 @@ def fetch_data(db: SupabaseClient) -> dict:
     except Exception:
         sell_events = []
 
+    # Fetch hold durations from sold positions (for dashboard enrichment)
+    try:
+        sold_resp = (
+            db.client.table("wallet_positions")
+            .select("alert_id, hold_duration_hours")
+            .neq("current_status", "open")
+            .not_.is_("hold_duration_hours", "null")
+            .execute()
+        )
+        # alert_id → minimum hold_duration_hours (earliest seller wins)
+        hold_durations: dict[int, float] = {}
+        for p in (sold_resp.data or []):
+            aid = p.get("alert_id")
+            h = p.get("hold_duration_hours")
+            if aid and h is not None:
+                if aid not in hold_durations or h < hold_durations[aid]:
+                    hold_durations[aid] = h
+    except Exception:
+        hold_durations = {}
+
     markets_list = markets_resp.data or []
     return {
         "alerts": alerts_resp.data or [],
         "markets": {m["market_id"]: m for m in markets_list},
         "last_scan": (scans_resp.data or [{}])[0] if scans_resp.data else {},
         "sell_events": sell_events,
+        "hold_durations": hold_durations,
     }
 
 
@@ -137,7 +158,11 @@ def _time_left(resolution_date: datetime | None) -> str:
 # ── Enrichment ───────────────────────────────────────────────
 
 
-def enrich_alerts(alerts: list[dict], markets: dict) -> list[dict]:
+def enrich_alerts(
+    alerts: list[dict],
+    markets: dict,
+    hold_durations: dict | None = None,
+) -> list[dict]:
     """Add derived display fields to each alert."""
     now = datetime.now(timezone.utc)
     enriched = []
@@ -224,6 +249,23 @@ def enrich_alerts(alerts: list[dict], markets: dict) -> list[dict]:
         else:
             a["sold_pct_display"] = None
 
+        # Hold indicator (resolved alerts only)
+        alert_outcome = a.get("outcome", "pending")
+        if alert_outcome in ("correct", "incorrect"):
+            if total_sold > 0:
+                a["hold_label"] = "sold-early"
+                hold_h = (hold_durations or {}).get(a.get("id"))
+                if hold_h is not None:
+                    a["hold_display"] = f"Sold after {round(hold_h, 1)}h"
+                else:
+                    a["hold_display"] = "Sold early"
+            else:
+                a["hold_label"] = "held"
+                a["hold_display"] = "Held to resolution"
+        else:
+            a["hold_label"] = None
+            a["hold_display"] = None
+
         enriched.append(a)
 
     return enriched
@@ -258,6 +300,24 @@ def compute_stats(alerts: list[dict], markets: dict) -> dict:
     )
     accuracy_3plus = (
         round((correct_3plus / total_3plus) * 100, 1) if total_3plus > 0 else None
+    )
+
+    # Accuracy split: held-to-resolution vs sold-early (3+ stars, merge_confirmed excl.)
+    held_3plus = [
+        a for a in stats_resolved
+        if (a.get("star_level") or 0) >= 3 and not (a.get("total_sold_pct") or 0)
+    ]
+    sold_early_3plus = [
+        a for a in stats_resolved
+        if (a.get("star_level") or 0) >= 3 and (a.get("total_sold_pct") or 0) > 0
+    ]
+    correct_held = sum(1 for a in held_3plus if a.get("outcome") == "correct")
+    correct_sold = sum(1 for a in sold_early_3plus if a.get("outcome") == "correct")
+    accuracy_3plus_held = (
+        round((correct_held / len(held_3plus)) * 100, 1) if held_3plus else None
+    )
+    accuracy_3plus_sold_early = (
+        round((correct_sold / len(sold_early_3plus)) * 100, 1) if sold_early_3plus else None
     )
 
     # By star level
@@ -441,6 +501,8 @@ def compute_stats(alerts: list[dict], markets: dict) -> dict:
         "alerts_with_sells": alerts_with_sells,
         "merge_confirmed_count": merge_confirmed_count,
         "merge_suspected_count": merge_suspected_count,
+        "accuracy_3plus_held": accuracy_3plus_held,
+        "accuracy_3plus_sold_early": accuracy_3plus_sold_early,
         "by_star": by_star,
         "alerts_per_day": alerts_per_day,
         "accuracy_over_time": accuracy_over_time,
@@ -487,7 +549,7 @@ def generate(output_dir: Path | None = None) -> Path:
     print(f"Fetched {len(data['alerts'])} alerts, {len(data['markets'])} markets")
     logger.info("Fetched %d alerts, %d markets", len(data["alerts"]), len(data["markets"]))
 
-    enriched = enrich_alerts(data["alerts"], data["markets"])
+    enriched = enrich_alerts(data["alerts"], data["markets"], data.get("hold_durations"))
     stats = compute_stats(data["alerts"], data["markets"])
     stats["last_scan"] = data["last_scan"]
     stats["sell_events"] = data.get("sell_events", [])

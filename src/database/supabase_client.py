@@ -511,17 +511,21 @@ class SupabaseClient:
         market_id: str,
         sell_amount: float,
         sell_timestamp: datetime,
+        hold_duration_hours: float | None = None,
     ) -> None:
         """Mark a position as sold or partially sold."""
         status = "sold" if sell_amount > 0 else "partial_sold"
-        self.client.table("wallet_positions").update({
+        update_data: dict = {
             "current_status": status,
             "sell_amount": sell_amount,
             "sell_timestamp": sell_timestamp.isoformat(),
             "updated_at": datetime.utcnow().isoformat(),
-        }).eq("wallet_address", wallet_address).eq(
-            "market_id", market_id
-        ).execute()
+        }
+        if hold_duration_hours is not None:
+            update_data["hold_duration_hours"] = round(hold_duration_hours, 2)
+        self.client.table("wallet_positions").update(update_data).eq(
+            "wallet_address", wallet_address
+        ).eq("market_id", market_id).execute()
 
     # ── Wallet Categories ─────────────────────────────────
 

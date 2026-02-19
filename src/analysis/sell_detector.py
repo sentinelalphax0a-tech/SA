@@ -114,6 +114,32 @@ class SellDetector:
             sell_amount = sum(t.amount for t in sell_trades)
             sell_ts = max(t.timestamp for t in sell_trades)
 
+            # Calculate hold duration: alert creation → sell detection.
+            # Primary: pos["created_at"] (set when WalletPosition was inserted).
+            # Fallback: fetch alert.created_at if position row pre-dates this field.
+            hold_hours: float | None = None
+            try:
+                from dateutil import parser as dt_parser
+
+                raw_ts = pos.get("created_at")
+                if raw_ts is None and pos.get("alert_id") and self.db is not None:
+                    # Lazy fallback: one DB call per sell (sells are rare)
+                    alert_row = (
+                        self.db.client.table("alerts")
+                        .select("created_at")
+                        .eq("id", pos["alert_id"])
+                        .single()
+                        .execute()
+                    )
+                    raw_ts = (alert_row.data or {}).get("created_at")
+                if raw_ts is not None:
+                    anchor = dt_parser.parse(raw_ts) if isinstance(raw_ts, str) else raw_ts
+                    if anchor.tzinfo is None:
+                        anchor = anchor.replace(tzinfo=timezone.utc)
+                    hold_hours = (sell_ts - anchor).total_seconds() / 3600
+            except Exception as exc:
+                logger.debug("hold_duration calc failed for %s: %s", wallet_addr[:10], exc)
+
             sell_wallets.append({
                 "address": wallet_addr,
                 "sell_amount": sell_amount,
@@ -132,6 +158,7 @@ class SellDetector:
                     market_id=market_id,
                     sell_amount=sell_amount,
                     sell_timestamp=sell_ts,
+                    hold_duration_hours=hold_hours,
                 )
             except Exception as e:
                 logger.debug("Failed to update position sold: %s", e)

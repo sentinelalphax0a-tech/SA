@@ -320,6 +320,9 @@ class WalletPosition:
     # Values: 'sell_clob' | 'merge_suspected' | 'net_zero' | 'position_gone'
     # 'position_gone' captures CTF merges, transfers, burns — any exit not visible in CLOB.
     close_reason: str | None = None
+    # hold_duration_hours: hours between alert creation and sell detection.
+    # Populated by SellDetector on CLOB sell. Tracking only — no scoring impact.
+    hold_duration_hours: float | None = None
     created_at: datetime = field(default_factory=datetime.utcnow)
     updated_at: datetime = field(default_factory=datetime.utcnow)
 
