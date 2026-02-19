@@ -512,9 +512,19 @@ class SupabaseClient:
         sell_amount: float,
         sell_timestamp: datetime,
         hold_duration_hours: float | None = None,
+        original_amount: float = 0.0,
     ) -> None:
-        """Mark a position as sold or partially sold."""
-        status = "sold" if sell_amount > 0 else "partial_sold"
+        """Mark a position as sold or partially sold.
+
+        A sell is considered partial when sell_amount < 85% of the original
+        position size.  Without a known original_amount the position is
+        assumed fully sold.
+        """
+        _PARTIAL_THRESHOLD = 0.85
+        if original_amount > 0:
+            status = "sold" if sell_amount >= original_amount * _PARTIAL_THRESHOLD else "partial_sold"
+        else:
+            status = "sold"
         update_data: dict = {
             "current_status": status,
             "sell_amount": sell_amount,

@@ -159,6 +159,7 @@ class SellDetector:
                     sell_amount=sell_amount,
                     sell_timestamp=sell_ts,
                     hold_duration_hours=hold_hours,
+                    original_amount=pos.get("total_amount", 0.0),
                 )
             except Exception as e:
                 logger.debug("Failed to update position sold: %s", e)
