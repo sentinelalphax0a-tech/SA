@@ -19,7 +19,7 @@
    - 6.3 [B — Comportamiento (32 filtros definidos)](#63-b--comportamiento-32-filtros-definidos)
    - 6.4 [C — Confluencia (9 filtros, 4 capas)](#64-c--confluencia-9-filtros-4-capas)
    - 6.5 [M — Mercado (8 filtros)](#65-m--mercado-8-filtros)
-   - 6.6 [N — Negativos (16 filtros)](#66-n--negativos-16-filtros)
+   - 6.6 [N — Negativos (17 filtros)](#66-n--negativos-17-filtros)
    - 6.7 [Grupos mutuamente excluyentes](#67-grupos-mutuamente-excluyentes)
 7. [Sistema de scoring](#7-sistema-de-scoring)
    - 7.1 [Pipeline de cálculo](#71-pipeline-de-cálculo)
@@ -97,12 +97,14 @@ SCAN_PROFILES = {
         "odds_max": 0.55,
         "max_markets": 100,
         "lookback_minutes": 35,
+        "max_funding_hops": 2,    # BFS funding: hasta 2 hops
     },
     "deep": {
         "min_volume": 200,
         "odds_max": 0.85,
         "max_markets": None,      # sin cap
         "lookback_minutes": 1440, # 24h
+        "max_funding_hops": 3,    # BFS funding: hasta 3 hops
     },
 }
 ```
@@ -158,18 +160,20 @@ SA/
 │   ├── test_news.py                # Test del news checker
 │   ├── test_polymarket.py          # Test de APIs Polymarket
 │   └── test_telegram.py            # Test del bot de Telegram
+├── migrations/
+│   └── add_merge_columns.py        # Migración: merge_suspected, merge_confirmed, close_reason
 ├── src/
-│   ├── config.py                   # Constantes, umbrales, definición de filtros (~665 líneas)
-│   ├── main.py                     # Orquestador principal (~1380 líneas)
+│   ├── config.py                   # Constantes, umbrales, definición de filtros (~690 líneas)
+│   ├── main.py                     # Orquestador principal (~1410 líneas)
 │   ├── analysis/
 │   │   ├── arbitrage_filter.py     # Filtro N03/N04 — detección de arbitraje
-│   │   ├── behavior_analyzer.py    # Filtros B01–B30, N09–N10 (~840 líneas)
-│   │   ├── confluence_detector.py  # Filtros C01–C07, agrupación union-find (~600 líneas)
+│   │   ├── behavior_analyzer.py    # Filtros B01–B30, N09–N10, N12 (~930 líneas)
+│   │   ├── confluence_detector.py  # Filtros C01–C07, agrupación union-find, anotación [hopN] (~600 líneas)
 │   │   ├── market_analyzer.py      # Filtros M01–M05 (~310 líneas)
 │   │   ├── noise_filter.py         # Filtros N01–N08 (~270 líneas)
 │   │   ├── reversion_checker.py    # Reversion post-resolución
 │   │   ├── scoring.py              # Motor de scoring + estrellas (~230 líneas)
-│   │   ├── sell_detector.py        # Detección de ventas de posición
+│   │   ├── sell_detector.py        # Detección de ventas CLOB, posiciones netas, merges (~440 líneas)
 │   │   ├── wallet_analyzer.py      # Filtros W01–W11, O01–O03, COORD04 (~250 líneas)
 │   │   └── wallet_tracker.py       # Win-rate y especialización de wallets
 │   ├── database/
@@ -180,7 +184,7 @@ SA/
 │   │   └── generate_dashboard.py   # Generación del dashboard
 │   ├── publishing/
 │   │   ├── chart_generator.py      # Generación de imágenes
-│   │   ├── formatter.py            # 12+ templates de mensajes
+│   │   ├── formatter.py            # 14+ templates de mensajes
 │   │   ├── telegram_bot.py         # Publicación multicanal Telegram
 │   │   └── twitter_bot.py          # Publicación X/Twitter (límite 10/día)
 │   ├── reports/
@@ -199,7 +203,10 @@ SA/
 │       ├── run_resolver.py         # Entry point del resolver
 │       ├── run_tracker.py          # Entry point del tracker
 │       └── whale_monitor.py        # Monitor de ventas y actividad whale
-├── tests/                          # 26 archivos de test, 737 tests totales
+├── tests/                          # 27 archivos de test, 781 tests totales
+├── vacunas/
+│   ├── aplicadas/                  # Scripts de corrección retroactiva ya ejecutados
+│   └── README.md                   # Registro de correcciones aplicadas
 ├── requirements.txt
 └── README.md
 ```
@@ -258,7 +265,18 @@ PASO 8 — GUARDAR + PUBLICAR
       └── Twitter (3+★, máximo 10/día)
 
 PASO 8b — SELL MONITORING
-  └── SellDetector.check_open_positions() → notificaciones de venta
+  ├── SellDetector.check_open_positions()
+  │   ├── Consulta CLOB por trades recientes en posiciones abiertas
+  │   ├── Sell individual → Telegram (1 wallet vendió)
+  │   └── Sell coordinado → Telegram (≥2 wallets vendieron en < 4h)
+  ├── [Solo con --post-scan-check] SellDetector.check_net_positions()
+  │   ├── Calcula posición neta en shares: buys - sells - min(buys, opp_buys)
+  │   ├── Salida total (< 20% restante) → format_position_gone() → Telegram
+  │   ├── Salida parcial (20-50% restante) → format_position_gone() → Telegram
+  │   └── close_reason: sell_clob | merge_suspected | net_zero | position_gone
+  └── SellDetector.check_merge_resolution()  [siempre, capped 20 alertas]
+      ├── Busca alertas merge_suspected=True, merge_confirmed=False (48h)
+      └── Si net_usd < $500 → merge_confirmed=True en DB
 
 PASO 9 — LOG
   └── INSERT Scan row con contadores (markets_scanned, alerts_generated, duración)
@@ -268,7 +286,7 @@ PASO 9 — LOG
 
 ## 6. Sistema de filtros
 
-El sistema tiene **76 filtros definidos** (70 activos, 6 deshabilitados o retirados) organizados en 6 categorías. Cada filtro tiene un ID único, nombre, puntos (positivos o negativos) y categoría que determina cómo contribuye al scoring.
+El sistema tiene **77 filtros definidos** (71 activos, 6 deshabilitados o retirados) organizados en 6 categorías. Cada filtro tiene un ID único, nombre, puntos (positivos o negativos) y categoría que determina cómo contribuye al scoring.
 
 **Regla de exclusión mutua:** Dentro de cada grupo, solo sobrevive el filtro con mayor `|points|`. El scoring engine lo garantiza como safety net, aunque los analyzers ya lo aplican individualmente.
 
@@ -455,6 +473,8 @@ Los 4 subtipos de C03 pueden dispararse simultáneamente si existen distintos ti
 
 **Corrección crítica de confluencia por odds:** Wallets apostando en la misma dirección pero a odds muy diferentes NO se agrupan como coordinadas. La agrupación usa union-find por relaciones de funding, no por dirección. Esto evita que wallets independientes que coinciden en la dirección mayoritaria se traten como coordinadas.
 
+**Anotación de hop en deep scan:** En modo deep (`max_funding_hops=3`), cuando el padre común de C03d o C07 se encuentra a hop 2 o 3 (no directo), el campo `detail` del filtro incluye la anotación `[hop2]` o `[hop3]`. En modo quick (`max_funding_hops=2`) el BFS no alcanza hop 3. Esto permite distinguir en el dashboard si la conexión de funding es directa o indirecta.
+
 ---
 
 ### 6.5 M — Mercado (8 filtros)
@@ -474,9 +494,9 @@ Evalúan las condiciones del mercado en el momento del análisis.
 
 ---
 
-### 6.6 N — Negativos (16 filtros)
+### 6.6 N — Negativos (17 filtros)
 
-Detectan ruido y penalizan el score. Implementados en `NoiseFilter` (N01-N08) y `BehaviorAnalyzer` (N09-N10).
+Detectan ruido y penalizan el score. Implementados en `NoiseFilter` (N01-N08) y `BehaviorAnalyzer` (N09-N10, N12).
 
 | ID | Nombre | Pts | Condición exacta | Notas |
 |----|--------|-----|-----------------|-------|
@@ -496,6 +516,7 @@ Detectan ruido y penalizan el score. Implementados en `NoiseFilter` (N01-N08) y 
 | N10a | Horizonte lejano | -10 | Mercado resuelve en > 30 días | Mut. excl. con N10b/c |
 | N10b | Horizonte muy lejano | -20 | Mercado resuelve en > 60 días | Mut. excl. con N10a/c |
 | N10c | Horizonte extremo | -30 | Mercado resuelve en > 90 días | Mut. excl. con N10a/b |
+| N12 | Merge CLOB | -40 | Mismo wallet compró tokens YES y NO del mismo mercado. Detección **en shares** (amount/price), no en USD, para evitar falsos positivos por asimetría de precios (ej. $900@0.90 = 1000 shares = $100@0.10). Umbral: `min(shares_YES, shares_NO) ≥ 1000` Y `net_shares < 15% del lado mayor`. Ventana: últimas 12h. | Etiqueta ML: `merge_suspected=True`. Primer caso confirmado en producción: alertas #677/#678 (Bank of Israel). |
 
 ---
 
@@ -529,6 +550,7 @@ El motor de scoring aplica esta tabla antes de sumar. Por cada grupo, solo sobre
 - B23 suprimido si cualquier B28 dispara
 - N09 suprimido si cualquier B25 dispara (y viceversa)
 - N08 suprimido si N01 dispara
+- N12 no tiene grupo de exclusión mutua (es el único filtro de merge; coexiste con otros negativos)
 
 ---
 
@@ -760,6 +782,8 @@ Cada grupo genera su propio `Alert` con los filtros W/B/O del mejor wallet del g
 | Telegram (canal principal) | 2★ | `format_telegram_alert` | Con score, sin IDs de filtros |
 | Telegram (canal público) | 3★ | `format_telegram_alert` | Sin score ni filtros |
 | Telegram whale entry (B19) | Siempre | `format_whale_entry` | Bypass de stars — formato especial |
+| Telegram merge (N12) | Cuando N12 dispara en ≥3★ | `format_merge_notification` | Alerta de cautela: wallet compró YES+NO — posición puede neutralizarse |
+| Telegram sell/posición | Al detectar salida | `format_position_gone` | Solo vía `--post-scan-check` o sell detector CLOB |
 | Twitter/X | 3★ | `format_x_alert` (280 chars) | Máximo 10/día |
 
 **Feature flags en `system_config`:**
@@ -798,25 +822,80 @@ CREADA (outcome='pending')
 
 ## 10. Sell Watch — monitoreo de salidas
 
-Sistema de tracking de posiciones que **NO afecta el score** de alertas existentes — solo registra metadata de salidas para análisis posterior.
+Sistema de tracking de posiciones que **NO afecta el score** de alertas existentes — registra metadata de salidas para análisis posterior y emite notificaciones Telegram. Implementado en `SellDetector` (`src/analysis/sell_detector.py`).
 
-**Configuración:**
-- `SELL_WATCH_MIN_STARS = 3` — solo monitorea alertas con ≥3★
-- `SELL_WATCH_MIN_SELL_PCT = 0.20` — ignora ventas < 20% de la posición
-- `SELL_WATCH_COOLDOWN_HOURS = 6` — máximo 1 evento de venta por alerta por 6h
-- `SELL_WATCH_NOTIFY_MIN_STARS = 4` — Telegram solo para 4-5★
+### 10.1 check_open_positions() — ventas CLOB visibles
 
-**Datos registrados en `alert_sell_events`:**
+Corre en **cada scan** (no requiere flag). Consulta la CLOB API por trades recientes en todos los mercados con posiciones abiertas.
 
-| Campo | Descripción |
-|-------|-------------|
-| `sell_amount` | Monto vendido en USD |
-| `sell_pct` | Fracción de la posición original vendida |
-| `event_type` | "FULL_EXIT" (≥90%) o "PARTIAL_EXIT" (20-90%) |
-| `sell_price` | Precio al que se vendió el token |
-| `original_entry_price` | Precio de entrada de la alerta |
-| `pnl_pct` | Rendimiento estimado (%) |
-| `held_hours` | Horas desde la alerta hasta la venta |
+- **Sell individual:** 1 wallet reduce/cierra posición → notificación Telegram
+- **Sell coordinado:** ≥2 wallets venden en el mismo mercado dentro de 4h → notificación Telegram diferenciada
+
+Configuración relevante:
+- `SELL_COORDINATED_MIN_WALLETS = 2`
+- `SELL_COORDINATED_WINDOW_HOURS = 4`
+
+### 10.2 check_net_positions() — salidas invisibles al CLOB
+
+Requiere flag `--post-scan-check` en la CLI. **Omitido automáticamente en GitHub Actions** (`GITHUB_ACTIONS=true`). Añade ~30-60s al scan. Capped a `SELL_POST_SCAN_MAX_ALERTS` posiciones para controlar el tiempo.
+
+Detecta salidas que no generan un sell explícito en CLOB:
+- **CTF merge:** wallet compra YES y NO del mismo mercado, los quema via CTF contract para recuperar $1 por par — invisible al CLOB por diseño
+- **Transfer out:** wallet transfiere los tokens a otra dirección
+- **Token burn:** tokens destruidos
+
+**Fórmula de posición neta (en shares/tokens, no en USD):**
+
+```python
+# is_market_order = (side == "BUY") desde la CLOB API
+dir_buys   = [t for t in dir_trades if t.is_market_order]      # compras en la dirección alerta
+dir_sells  = [t for t in dir_trades if not t.is_market_order]  # cierre explícito CLOB
+opp_buys   = [t for t in opp_trades if t.is_market_order]      # compra del token opuesto (merge/hedge)
+
+buys_shares    = sum(amount/price for dir_buys)
+sells_shares   = sum(amount/price for dir_sells)
+opp_buy_shares = sum(amount/price for opp_buys)
+
+merges_estimated = min(buys_shares, opp_buy_shares)  # proxy conservador de CTF merges
+net_shares = max(0, buys_shares - sells_shares - merges_estimated)
+remaining_pct = net_shares / buys_shares * 100
+```
+
+**Umbrales de salida:**
+- `remaining_pct < SELL_NET_TOTAL_THRESHOLD * 100` → salida total (`net_exit_total` / `position_gone`)
+- `remaining_pct < SELL_NET_PARTIAL_THRESHOLD * 100` → salida parcial (`net_exit_partial`)
+
+**close_reason** (etiqueta ML, no diagnóstico definitivo):
+
+| Valor | Condición |
+|-------|-----------|
+| `sell_clob` | Solo dir_sells > 0 (cierre CLOB explícito, sin hedge) |
+| `merge_suspected` | opp_buys > 0 (compra token opuesto — probable CTF merge) |
+| `merge_suspected` | dir_sells > 0 Y opp_buys > 0 (CLOB arbitrage: cierre + hedge simultáneo) |
+| `position_gone` | net_shares ≈ 0 sin ninguna actividad CLOB (transfer o burn) |
+
+### 10.3 check_merge_resolution() — verificación retroactiva de merges
+
+Corre al **final de cada scan normal** (sin flag). Capped a 20 alertas más recientes para limitar overhead (objetivo: < 10s por scan).
+
+- Busca alertas `merge_suspected=True, merge_confirmed=False, outcome=pending` en últimas 48h
+- Para cada una: calcula net USD de todas las wallets en el mercado
+- Si `total_net_usd < $500` → actualiza `merge_confirmed=True` en DB
+
+**Ground truth de ML:** Las alertas #677 y #678 (Bank of Israel, NO 5★, feb 2026) son los primeros casos confirmados manualmente — `merge_suspected=True, merge_confirmed=True`.
+
+### 10.4 CLI
+
+```bash
+# Scan normal (check_open_positions + check_merge_resolution)
+python -m src.main --mode quick
+
+# Scan con verificación de posición neta (añade check_net_positions)
+python -m src.main --mode quick --post-scan-check
+
+# Deep scan con verificación completa
+python -m src.main --mode deep --post-scan-check
+```
 
 ---
 
@@ -895,13 +974,13 @@ PostgreSQL (Supabase, plan free). 16 tablas.
 
 | Tabla | Modelo Python | Propósito |
 |-------|--------------|-----------|
-| `alerts` | `Alert` | Alertas generadas. Campos clave: `score` (final), `score_raw`, `multiplier`, `star_level`, `filters_triggered` (JSONB), `wallets` (JSONB array), `outcome` (pending/correct/incorrect), `multi_signal`, `is_secondary`, `alert_group_id`, `secondary_count`, `total_sold_pct` |
+| `alerts` | `Alert` | Alertas generadas. Campos clave: `score` (final), `score_raw`, `multiplier`, `star_level`, `filters_triggered` (JSONB), `wallets` (JSONB array), `outcome` (pending/correct/incorrect), `multi_signal`, `is_secondary`, `alert_group_id`, `secondary_count`, `total_sold_pct`, `merge_suspected` (BOOLEAN), `merge_confirmed` (BOOLEAN) |
 | `wallets` | `Wallet` | Catálogo de wallets detectadas. Campos: `wallet_age_days`, `total_markets`, `win_rate`, `total_pnl`, `times_detected`, `origin_exchange`, `is_first_tx_pm`, `is_blacklisted`, `degen_score` |
 | `markets` | `Market` | Mercados de Polymarket. Campos: `current_odds`, `volume_24h`, `volume_7d_avg`, `liquidity`, `resolution_date`, `is_resolved`, `outcome` |
 | `wallet_funding` | `WalletFunding` | Traza de funding: `sender_address`, `hop_level` (1-2), `is_exchange`, `exchange_name`, `is_bridge`, `bridge_name`, `is_mixer`, `mixer_name` |
 | `market_snapshots` | `MarketSnapshot` | Histórico de `odds`, `volume_24h`, `liquidity` por mercado. Alimenta M01 y M02 |
 | `alert_tracking` | `AlertTracking` | Seguimiento de odds post-alerta. `outcome`: pending/correct/incorrect |
-| `wallet_positions` | `WalletPosition` | Posiciones abiertas por wallet/mercado. `current_status`: open/sold/partial_sold |
+| `wallet_positions` | `WalletPosition` | Posiciones abiertas por wallet/mercado. `current_status`: open/sold/partial_sold. `close_reason`: sell_clob/merge_suspected/net_zero/position_gone (etiqueta ML) |
 | `alert_sell_events` | `SellEvent` | Eventos de venta detectados: `sell_pct`, `event_type`, `pnl_pct`, `held_hours` |
 | `scans` | `Scan` | Log de cada ciclo: `markets_scanned`, `alerts_generated`, `duration_seconds`, `status` |
 | `smart_money_leaderboard` | `SmartMoneyLeaderboard` | Ranking de wallets por `win_rate` y `estimated_pnl` |
@@ -921,6 +1000,22 @@ ALTER TABLE alerts
   ADD COLUMN IF NOT EXISTS alert_group_id TEXT,
   ADD COLUMN IF NOT EXISTS secondary_count INTEGER DEFAULT 0;
 ```
+
+### Migración merge detection (añadida en producción — feb 2026)
+
+Script: `migrations/add_merge_columns.py` (verificación) + SQL ejecutado manualmente en Supabase SQL Editor.
+
+```sql
+ALTER TABLE alerts
+  ADD COLUMN IF NOT EXISTS merge_suspected BOOLEAN DEFAULT FALSE,
+  ADD COLUMN IF NOT EXISTS merge_confirmed BOOLEAN DEFAULT FALSE;
+
+ALTER TABLE wallet_positions
+  ADD COLUMN IF NOT EXISTS close_reason TEXT
+  CHECK (close_reason IN ('sell_clob', 'merge_suspected', 'net_zero', 'position_gone'));
+```
+
+**Por qué SQL manual:** La Supabase REST API no expone un endpoint `exec_sql` genérico. El script de migración sirve como verificador post-ejecución — si las columnas existen, confirma que la migración se aplicó correctamente.
 
 ### APIs usadas
 
@@ -1027,6 +1122,16 @@ ALTER TABLE alerts
 | **Commit** | `3b800a6 fix: dashboard entry price from wallet + verify stars use final score` |
 | **Estado** | Resuelto |
 
+### Bug 8 — Dead code en `_check_net_position`: `sells_shares` y `opp_buy_shares` siempre iguales
+
+| | |
+|---|---|
+| **Descripción** | En la implementación inicial de `SellDetector._check_net_position`, `sells_shares` y `opp_buy_shares` se calculaban ambas sumando `opp_trades` (trades de la dirección opuesta), haciendo que sus valores fueran siempre idénticos. La rama `elif sells_shares > 0: close_reason = "sell_clob"` era código muerto — la condición anterior `sells_shares > 0 and opp_buy_shares > 0` siempre se evaluaba verdadera primero cuando había trades opuestos, por lo que `sell_clob` nunca se asignaba. |
+| **Impacto** | `close_reason = "sell_clob"` nunca se producía para detección neta: cualquier salida con trades opuestos quedaba etiquetada `merge_suspected` aunque fuera un cierre CLOB explícito sin hedge. Etiquetas ML incorrectas. |
+| **Solución** | Usar `TradeEvent.is_market_order` (= `side == "BUY"` de la CLOB API) para separar las tres listas: `dir_buys` (compras en dirección alerta), `dir_sells` (cierres CLOB explícitos en la dirección alerta), `opp_buys` (compras del token opuesto — hedge/merge). Ahora las tres son distintas y `sell_clob` es alcanzable cuando el wallet cierra sin hedge. |
+| **Commits** | `475c19e fix: dead code in _check_net_position — use is_market_order to split dir_sells from opp_buys` |
+| **Estado** | Resuelto |
+
 ---
 
 ## 16. Decisiones técnicas y lecciones aprendidas
@@ -1085,16 +1190,17 @@ ALTER TABLE alerts
 
 ## 17. Tests
 
-**Total actual: 737 tests en 26 archivos** (verificado con `pytest --collect-only -q`)
+**Total actual: 781 tests en 27 archivos** (verificado con `pytest --collect-only -q`)
 
 | Archivo | Tests aprox. | Cobertura principal |
 |---------|-------------|-------------------|
 | `test_filters_integration.py` | 180+ | Integración: false positives por lookback, supresión Data API, mutual exclusion end-to-end |
 | `test_main.py` | 50 | Orquestación, dedup, publish routing, multi-signal |
-| `test_formatter.py` | 66 | 12+ formatos de mensaje Telegram/X |
-| `test_behavior_analyzer.py` | 56 | Filtros B01-B30, N09-N10, exclusiones mutuas |
+| `test_formatter.py` | 66 | 14+ formatos de mensaje Telegram/X (incluye format_merge_notification, format_position_gone) |
+| `test_behavior_analyzer.py` | 56 | Filtros B01-B30, N09-N10, N12, exclusiones mutuas |
 | `test_scoring.py` | 49 | Stars, multiplicadores, validación, N09 cap |
-| `test_confluence.py` | 48 | Capas C01-C07, exclusiones de infra, group_and_detect |
+| `test_confluence.py` | 48 | Capas C01-C07, exclusiones de infra, group_and_detect, anotación [hopN] |
+| `test_merge_detection.py` | 44 | N12, check_net_positions, check_merge_resolution, format_merge_notification, format_position_gone |
 | `test_dashboard.py` | 27 | Generación del dashboard HTML |
 | `test_twitter_bot.py` | 26 | Publicación en X/Twitter |
 | `test_resolver.py` | 26 | Resolución de mercados, CLOB API, salvaguardas |
@@ -1116,6 +1222,14 @@ ALTER TABLE alerts
 | `test_consolidation.py` | 7 | Consolidación de alertas |
 | `test_sell_detector.py` | 5 | Detección individual de ventas |
 
+**Notas sobre `test_merge_detection.py`:**
+- `TestCheckMerge` (11 tests): N12 — detección simétrica, asimétrica en USD pero igual en shares ($900@0.90 = $100@0.10 = 1000 shares), ventana temporal, mínimo de shares, string de detalle
+- `TestCheckNetPosition` (9 tests): salida total, parcial, close_reason según combinación dir_sells/opp_buys, usa helper `_t(direction, amount, price, is_buy)` con `is_market_order` explícito
+- `TestCheckNetPositionsGitHubActions` (3 tests): guard de CI, sin DB, sin posiciones
+- `TestCheckMergeResolution` (5 tests): sin db/pm, query fallida, confirmado, no confirmado
+- `TestFormatMergeNotification` (7 tests): header, alert id, score, detalle, nota de cautela
+- `TestFormatPositionGone` (9 tests): header, pregunta, dirección, remaining_pct, monto, close_reasons, link mercado, wallets vacías
+
 **Ejecutar todos los tests:**
 ```bash
 source venv/bin/activate
@@ -1134,7 +1248,7 @@ python -m pytest tests/test_behavior_analyzer.py tests/test_filters_integration.
 ### Fase actual — Feb/Mar 2026: Refinamiento y validación
 
 El sistema está en producción desde enero 2026. Prioridades:
-- Detectar y corregir bugs en filtros existentes (7 bugs críticos ya resueltos en feb 2026)
+- Detectar y corregir bugs en filtros existentes (8 bugs críticos ya resueltos en feb 2026)
 - Afinar scoring: reducir false positives, mejorar precisión de detección
 - Acumular track record: publicar alertas y verificar si el mercado resolvió en la dirección apostada
 
@@ -1177,9 +1291,9 @@ Con 1-2 años de datos históricos etiquetados:
 
 | Métrica | Valor |
 |---------|-------|
-| Filtros definidos en config.py | 76 |
-| Filtros activos en producción | 70 (6 deshabilitados: B18e retirado; B27a-b y B30a-c pendientes) |
-| Tests automatizados | **737** (26 archivos) |
+| Filtros definidos en config.py | 77 |
+| Filtros activos en producción | 71 (6 deshabilitados: B18e retirado; B27a-b y B30a-c pendientes) |
+| Tests automatizados | **781** (27 archivos) |
 | Workflows de GitHub Actions | 8 |
 | Tablas en Supabase | 16 |
 | Mercados en modo quick | ~100 (top por volumen 24h) |
@@ -1187,10 +1301,12 @@ Con 1-2 años de datos históricos etiquetados:
 | Frecuencia de scan automatizado | Cada 3 horas |
 | Lookback quick | 35 minutos |
 | Lookback deep | 24 horas |
+| Max funding hops (quick / deep) | 2 / 3 |
 | Coste operacional mensual | $0 (todos los servicios en plan free) |
 | En producción desde | Enero 2026 |
-| Bugs críticos resueltos | 7 |
+| Bugs críticos resueltos | 8 |
 | Alertas corregidas retroactivamente | 342 (fix falsos positivos feb 2026) + 94 (fix resolver feb 2026) |
+| Merges CLOB confirmados manualmente | 2 (alertas #677/#678 — ground truth para ML) |
 | Score máximo posible | 400 pts (techo definido en `SCORE_CAP`) |
 | Umbral mínimo para publicación Telegram | 2★ (score_final ≥ 70) |
 | Umbral mínimo para publicación Twitter | 3★ (score_final ≥ 100) |
