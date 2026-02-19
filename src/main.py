@@ -882,6 +882,11 @@ def run_scan(
                     except Exception as e:
                         logger.error("Deep scan resolver failed: %s", e)
 
+                    try:
+                        _backfill_hold_durations(db)
+                    except Exception as e:
+                        logger.error("hold_duration backfill failed: %s", e)
+
             except Exception as e:
                 logger.error("Sell monitoring failed: %s", e)
         else:
@@ -914,6 +919,61 @@ def run_scan(
             logger.info("[DRY-RUN] Scan complete — not recording to database")
 
     _log_scan_summary(scan)
+
+
+def _backfill_hold_durations(db: SupabaseClient) -> int:
+    """Backfill hold_duration_hours for sold positions that are missing it.
+
+    Calculates hold_duration_hours = (sell_timestamp - created_at) / 3600
+    for every wallet_position where:
+      - current_status != 'open'   (position was exited)
+      - hold_duration_hours IS NULL (not yet calculated)
+      - sell_timestamp IS NOT NULL  (sell was recorded)
+
+    Returns the number of positions updated.
+    """
+    try:
+        rows = (
+            db.client.table("wallet_positions")
+            .select("id,created_at,sell_timestamp")
+            .neq("current_status", "open")
+            .is_("hold_duration_hours", "null")
+            .not_.is_("sell_timestamp", "null")
+            .execute()
+            .data
+        ) or []
+    except Exception as e:
+        logger.error("_backfill_hold_durations: query failed: %s", e)
+        return 0
+
+    if not rows:
+        logger.debug("_backfill_hold_durations: nothing to backfill")
+        return 0
+
+    from dateutil import parser as dt_parser
+
+    updated = 0
+    for row in rows:
+        try:
+            anchor = dt_parser.parse(row["created_at"])
+            sell_ts = dt_parser.parse(row["sell_timestamp"])
+            if anchor.tzinfo is None:
+                anchor = anchor.replace(tzinfo=timezone.utc)
+            if sell_ts.tzinfo is None:
+                sell_ts = sell_ts.replace(tzinfo=timezone.utc)
+            hold_h = round((sell_ts - anchor).total_seconds() / 3600, 2)
+            db.client.table("wallet_positions").update(
+                {"hold_duration_hours": hold_h}
+            ).eq("id", row["id"]).execute()
+            updated += 1
+        except Exception as e:
+            logger.debug(
+                "_backfill_hold_durations: failed for position #%s: %s",
+                row.get("id"), e,
+            )
+
+    logger.info("_backfill_hold_durations: updated %d positions", updated)
+    return updated
 
 
 def _log_scan_summary(scan: Scan) -> None:

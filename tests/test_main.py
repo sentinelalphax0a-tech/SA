@@ -24,6 +24,7 @@ from src.main import (
     _analyze_wallet,
     _deduplicate_alerts,
     _filter_markets,
+    _backfill_hold_durations,
     run_scan,
 )
 from src import config
@@ -701,3 +702,79 @@ class TestDeepScanResolver:
     def test_resolver_not_called_in_quick_mode(self):
         result = self._run_with_mocked_resolver("quick")
         result.run.assert_not_called()
+
+
+class TestBackfillHoldDurations:
+    """Tests for _backfill_hold_durations()."""
+
+    def _make_db(self, rows):
+        """Build a minimal mock SupabaseClient that returns the given rows."""
+        from unittest.mock import MagicMock
+
+        db = MagicMock()
+        # Chain: .table().select().neq().is_().not_.is_().execute().data
+        q = MagicMock()
+        q.neq.return_value = q
+        q.is_.return_value = q
+        q.not_ = MagicMock()
+        q.not_.is_.return_value = q
+        q.execute.return_value = MagicMock(data=rows)
+        db.client.table.return_value.select.return_value = q
+
+        # Capture update calls
+        update_chain = MagicMock()
+        update_chain.eq.return_value = update_chain
+        update_chain.execute.return_value = MagicMock()
+        db.client.table.return_value.update.return_value = update_chain
+
+        return db, update_chain
+
+    def test_updates_null_hold_duration(self):
+        rows = [{
+            "id": 1,
+            "created_at": "2026-02-17T20:00:00+00:00",
+            "sell_timestamp": "2026-02-18T08:00:00+00:00",  # 12h later
+        }]
+        db, update_chain = self._make_db(rows)
+        count = _backfill_hold_durations(db)
+
+        assert count == 1
+        update_chain.execute.assert_called_once()
+        # Verify the value passed: 12h
+        called_data = db.client.table.return_value.update.call_args[0][0]
+        assert called_data["hold_duration_hours"] == 12.0
+
+    def test_returns_zero_when_nothing_to_backfill(self):
+        db, _ = self._make_db([])
+        count = _backfill_hold_durations(db)
+        assert count == 0
+        db.client.table.return_value.update.assert_not_called()
+
+    def test_skips_unparseable_timestamps_gracefully(self):
+        rows = [
+            {"id": 1, "created_at": "not-a-date", "sell_timestamp": "2026-02-18T08:00:00+00:00"},
+            {"id": 2, "created_at": "2026-02-17T20:00:00+00:00", "sell_timestamp": "2026-02-18T08:00:00+00:00"},
+        ]
+        db, update_chain = self._make_db(rows)
+        count = _backfill_hold_durations(db)
+        # row 1 fails, row 2 succeeds
+        assert count == 1
+
+    def test_fractional_hours_rounded_to_two_decimals(self):
+        # 1h 30m = 1.5h exactly
+        rows = [{
+            "id": 1,
+            "created_at": "2026-02-17T00:00:00+00:00",
+            "sell_timestamp": "2026-02-17T01:30:00+00:00",
+        }]
+        db, _ = self._make_db(rows)
+        _backfill_hold_durations(db)
+        called_data = db.client.table.return_value.update.call_args[0][0]
+        assert called_data["hold_duration_hours"] == 1.5
+
+    def test_db_query_failure_returns_zero(self):
+        from unittest.mock import MagicMock
+        db = MagicMock()
+        db.client.table.return_value.select.side_effect = Exception("DB error")
+        count = _backfill_hold_durations(db)
+        assert count == 0
