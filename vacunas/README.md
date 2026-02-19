@@ -37,6 +37,7 @@ Un script Python que corrige datos en Supabase como consecuencia de un bug en el
 | 2026-02-19 | `aplicadas/2026-02-19_delete_historical_noise_alerts.py` | Eliminar alertas 340/580/631/649: daño histórico de persistencia irrecuperable (score_raw vs computed delta 14-216 pts) — ruido para ML | 17 filas (4 alerts + 9 wallet_positions + 4 alert_tracking) | manual | NO |
 | 2026-02-19 | `aplicadas/2026-02-19_retroactive_merge_detection.py` | Detección retroactiva de merges CLOB (wallet compró YES y NO del mismo mercado). LIMITACIÓN: sin tabla de trades raw solo detecta casos con trades de dirección mixta en alerts.wallets (resultado esperado: 0 filas). El filtro N12 cubre casos futuros en tiempo real. | 0 (N12 no existía antes de este commit) | manual | SI |
 | 2026-02-19 | `aplicadas/2026-02-19_dashboard_merge_cleanup.py` | Marcar is_secondary=True en alertas pending con N12 y star_level≤1. 0 filas — N12 no existía en alertas históricas. | 0 | manual | SI |
+| 2026-02-19 | *(directo DB)* | Label manual: alerts #677 y #678 (Bank of Israel, NO 5★, outcome=correct) confirmadas como merge CLOB por el operador. merge_suspected=True, merge_confirmed=True. Primer caso de ground truth para ML. | 2 alertas | manual | SI |
 
 ---
 
