@@ -156,7 +156,12 @@ class TestCheckMerge:
 
 
 class TestCheckNetPosition:
-    """Unit tests for SellDetector._check_net_position."""
+    """Unit tests for SellDetector._check_net_position.
+
+    Uses is_market_order to distinguish buy vs sell side:
+      True  = side=="BUY"  (acquiring tokens)
+      False = side=="SELL" (liquidating tokens)
+    """
 
     def setup_method(self):
         self.db = MagicMock()
@@ -173,15 +178,21 @@ class TestCheckNetPosition:
             "alert_id": 99,
         }
 
+    @staticmethod
+    def _t(direction, amount, price, is_buy: bool) -> TradeEvent:
+        t = _trade(direction, amount, price)
+        t.is_market_order = is_buy
+        return t
+
     def test_returns_none_when_entry_odds_zero(self):
         pos = self._pos(entry_odds=0)
         result = self.sd._check_net_position(pos, [], "m1", "Q?")
         assert result is None
 
     def test_returns_none_when_no_buys_in_window(self):
-        """If no same-direction trades in window, can't assess — return None."""
+        """No same-direction BUY trades → buys_shares=0 → None."""
         pos = self._pos()
-        trades = [_trade("NO", 500, 0.50)]  # only opposite direction
+        trades = [self._t("NO", 500, 0.50, True)]  # only opp direction
         result = self.sd._check_net_position(pos, trades, "m1", "Q?")
         assert result is None
 
@@ -189,18 +200,18 @@ class TestCheckNetPosition:
         """Net 80% remaining → above both thresholds → None."""
         pos = self._pos()
         trades = [
-            _trade("YES", 5000, 0.50),   # 10000 shares bought
-            _trade("NO", 1000, 0.50),    # 2000 shares sold → net 8000 = 80%
+            self._t("YES", 5000, 0.50, True),   # BUY: 10000 shares
+            self._t("YES", 1000, 0.50, False),  # SELL: 2000 shares → net 8000 = 80%
         ]
         result = self.sd._check_net_position(pos, trades, "m1", "Q?")
         assert result is None
 
     def test_detects_total_exit(self):
-        """Net < 20% → net_exit_total event."""
+        """Explicit SELL 9800/10000 shares → net 2% → net_exit_total."""
         pos = self._pos()
         trades = [
-            _trade("YES", 5000, 0.50),   # 10000 shares bought
-            _trade("NO", 4900, 0.50),    # 9800 shares sold → net 200 = 2%
+            self._t("YES", 5000, 0.50, True),   # BUY: 10000 shares
+            self._t("YES", 4900, 0.50, False),  # SELL: 9800 shares → net 200 = 2%
         ]
         result = self.sd._check_net_position(pos, trades, "m1", "Q?")
         assert result is not None
@@ -208,19 +219,11 @@ class TestCheckNetPosition:
         assert result["wallets"][0]["remaining_pct"] < 20
 
     def test_detects_partial_exit(self):
-        """Net ~40% remaining → net_exit_partial event.
-
-        Formula: net = max(0, buys - sells - min(buys, opp_buys))
-        sells_shares == opp_buy_shares (same source), so:
-          net = buys - 2*sells  (when sells < buys/2)
-        For remaining in [20%, 60%): sells must be in (0.20*buys, 0.40*buys)
-          buys = 10000 shares; sells must be (2000, 4000)
-          → use 1500@0.50 = 3000 shares → net = 10000 - 6000 = 4000 = 40%
-        """
+        """SELL 6000/10000 shares → net 40% → net_exit_partial."""
         pos = self._pos()
         trades = [
-            _trade("YES", 5000, 0.50),   # 10000 shares
-            _trade("NO", 1500, 0.50),    # 3000 shares → net = 10000 - 2*3000 = 4000 = 40%
+            self._t("YES", 5000, 0.50, True),   # BUY: 10000 shares
+            self._t("YES", 3000, 0.50, False),  # SELL: 6000 shares → net 4000 = 40%
         ]
         result = self.sd._check_net_position(pos, trades, "m1", "Q?")
         assert result is not None
@@ -228,46 +231,52 @@ class TestCheckNetPosition:
         remaining = result["wallets"][0]["remaining_pct"]
         assert 20 <= remaining < 60
 
-    def test_close_reason_with_opp_trades(self):
-        """Any opposite-direction trades → close_reason is merge_suspected.
-
-        Note: sells_shares and opp_buy_shares are computed from the same
-        opp_trades list, so they're always equal. The 'merge_suspected'
-        branch (sells>0 AND opp_buys>0) is always taken when opp trades exist.
-        """
+    def test_close_reason_sell_clob_when_only_explicit_sells(self):
+        """Explicit dir SELL, no opp buys → close_reason = sell_clob."""
         pos = self._pos()
         trades = [
-            _trade("YES", 5000, 0.50),   # 10000 shares
-            _trade("NO", 1500, 0.50),    # 3000 shares (in opp direction)
+            self._t("YES", 5000, 0.50, True),   # BUY: 10000 shares
+            self._t("YES", 4900, 0.50, False),  # SELL: 9800 shares — explicit close
+        ]
+        result = self.sd._check_net_position(pos, trades, "m1", "Q?")
+        assert result is not None
+        assert result["close_reason"] == "sell_clob"
+
+    def test_close_reason_merge_suspected_with_opp_buys(self):
+        """Wallet BUY YES + BUY NO → merge_suspected."""
+        pos = self._pos()
+        trades = [
+            self._t("YES", 5000, 0.50, True),  # BUY YES: 10000 shares
+            self._t("NO",  5000, 0.50, True),  # BUY NO: 10000 shares (hedge)
         ]
         result = self.sd._check_net_position(pos, trades, "m1", "Q?")
         assert result is not None
         assert result["close_reason"] == "merge_suspected"
 
-    def test_close_reason_merge_suspected_with_opp_buys(self):
-        """Wallet bought both YES and NO → merge_suspected close_reason."""
+    def test_close_reason_merge_suspected_with_both_sell_and_opp_buy(self):
+        """Explicit SELL + BUY opp → merge_suspected (both present)."""
         pos = self._pos()
-        # YES side: 10000 shares bought; NO side: also 10000 shares → merge proxy kills net
         trades = [
-            _trade("YES", 5000, 0.50),  # 10000 shares
-            _trade("NO", 5000, 0.50),   # 10000 shares (opp buy = merge proxy)
+            self._t("YES", 5000, 0.50, True),   # BUY YES: 10000 shares
+            self._t("YES", 2000, 0.50, False),  # SELL YES: 4000 shares
+            self._t("NO",  2000, 0.50, True),   # BUY NO: 4000 shares (hedge)
         ]
         result = self.sd._check_net_position(pos, trades, "m1", "Q?")
         assert result is not None
         assert result["close_reason"] == "merge_suspected"
 
     def test_position_gone_without_clob_sells(self):
-        """< 5% net with no opp trades → position_gone (CTF/transfer)."""
+        """< 5% net with no sells or opp buys → position_gone."""
         pos = self._pos()
-        # Bought YES but barely visible (tiny net due to tiny buy window)
-        # We simulate: buys_shares = 200, no sells, no opp buys → net 200/200=100%? No.
-        # To trigger position_gone: buys > 0, sells = 0, opp_buys = 0,
-        # net_shares < 5% of buys → impossible without sells/opp.
-        # Actually the condition is: net_shares < buys * 0.05
-        # With buys=200 YES shares, no sells, no opp → net=200, remaining=100% → no event.
-        # To get position_gone: need buys small compared to threshold — not easily triggerable
-        # via the formula without sells. Skip this edge case (needs more complex setup).
-        pass  # position_gone is an edge case covered by check_net_positions integration
+        # Wallet shows only tiny buy in window (e.g. lookback window is short)
+        # buys=100 shares, sells=0, opp=0 → net=100 = 100% → no event (not gone)
+        # To trigger position_gone we need net < 5% of buys with no sell/opp activity.
+        # This requires buys > 0 AND net < 5% AND no opp/sells — effectively impossible
+        # with only buy trades (net would equal buys = 100%).
+        # The case is covered by integration: if lookback misses original buy but still
+        # sees a tiny re-buy, net would look tiny vs original position.
+        # Documented: position_gone is triggered by the formula in integration only.
+        pass
 
 
 # ── SellDetector.check_net_positions — GitHub Actions guard ──

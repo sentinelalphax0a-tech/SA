@@ -288,22 +288,23 @@ class SellDetector:
         dir_trades = [t for t in wallet_trades if t.direction == direction]
         opp_trades = [t for t in wallet_trades if t.direction != direction]
 
-        # Shares calculation
-        buys_shares = sum(
-            t.amount / t.price for t in dir_trades if t.price > 0
-        )
-        sells_shares = sum(
-            t.amount / t.price for t in opp_trades if t.price > 0  # selling = buying opposite
-        )
+        # Use is_market_order (= side=="BUY" from CLOB API) to separate:
+        #   dir buys  = acquiring the alerted direction token (side=BUY, same direction)
+        #   dir sells = explicitly closing the position (side=SELL, same direction)
+        #   opp buys  = buying the opposite token = merge/hedge (side=BUY, opp direction)
+        dir_buys  = [t for t in dir_trades if t.is_market_order]
+        dir_sells = [t for t in dir_trades if not t.is_market_order]
+        opp_buys  = [t for t in opp_trades if t.is_market_order]
+
+        buys_shares = sum(t.amount / t.price for t in dir_buys  if t.price > 0)
+        sells_shares = sum(t.amount / t.price for t in dir_sells if t.price > 0)
+        opp_buy_shares = sum(t.amount / t.price for t in opp_buys  if t.price > 0)
 
         if buys_shares <= 0:
             return None  # no buys in window — can't assess
 
-        # Conservative merge proxy: if wallet also bought opposite direction,
-        # min(buys, opp_buys) shares are likely neutralized
-        opp_buy_shares = sum(
-            t.amount / t.price for t in opp_trades if t.price > 0
-        )
+        # Conservative merge proxy: if wallet bought opposite tokens,
+        # min(buys, opp_buys) shares are likely neutralized via CTF merge
         merges_estimated = min(buys_shares, opp_buy_shares)
 
         net_shares = max(0.0, buys_shares - sells_shares - merges_estimated)
@@ -311,13 +312,15 @@ class SellDetector:
 
         # Determine close_reason
         if sells_shares > 0 and opp_buy_shares > 0:
-            close_reason = "merge_suspected"
+            close_reason = "merge_suspected"   # explicit sell + hedge = CLOB arbitrage
         elif sells_shares > 0:
-            close_reason = "sell_clob"
+            close_reason = "sell_clob"         # explicit CLOB sell, no hedge
+        elif opp_buy_shares > 0:
+            close_reason = "merge_suspected"   # only opposite buys = merge proxy
         elif net_shares < buys_shares * 0.05:
-            close_reason = "position_gone"  # disappeared without CLOB activity
+            close_reason = "position_gone"     # disappeared without any CLOB activity
         else:
-            close_reason = "sell_clob"
+            close_reason = "sell_clob"         # fallback (should not reach here)
 
         now = datetime.now(timezone.utc)
 
