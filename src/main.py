@@ -46,6 +46,7 @@ from src.analysis.arbitrage_filter import tokenize_for_dedup, jaccard
 from src.publishing.twitter_bot import TwitterBot
 from src.publishing.telegram_bot import TelegramBot
 from src.publishing.formatter import AlertFormatter
+from src.tracking.resolver import MarketResolver
 
 logging.basicConfig(
     level=logging.INFO,
@@ -869,6 +870,17 @@ def run_scan(
                     logger.info("Merge resolution check: %s", merge_result)
                 except Exception as e:
                     logger.debug("check_merge_resolution failed: %s", e)
+
+                # Deep-scan only: re-verify all pending alerts against CLOB API.
+                # Resolves any markets that have settled since the last daily
+                # resolver.yml run without waiting for the next scheduled cycle.
+                if mode == "deep":
+                    try:
+                        resolver = MarketResolver(db=db, polymarket=pm_client)
+                        resolve_result = resolver.run()
+                        logger.info("Deep scan resolver: %s", resolve_result)
+                    except Exception as e:
+                        logger.error("Deep scan resolver failed: %s", e)
 
             except Exception as e:
                 logger.error("Sell monitoring failed: %s", e)

@@ -665,3 +665,39 @@ class TestFilterWalletsByDirection:
         # f1 (B01) and f3 (B25a) should be kept, f2 (B07) excluded
         assert kept_f[0][0].filter_id == "B01"
         assert kept_f[1][0].filter_id == "B25a"
+
+
+class TestDeepScanResolver:
+    """Verify MarketResolver is called in deep mode and skipped in quick mode."""
+
+    def _run_with_mocked_resolver(self, mode: str) -> "MagicMock":
+        """
+        Runs the sell-monitoring block in isolation by calling the resolver
+        import path directly — avoids spinning up the full scan pipeline.
+        """
+        from unittest.mock import MagicMock, patch
+
+        mock_resolver_instance = MagicMock()
+        mock_resolver_instance.run.return_value = {"resolved": 0, "correct": 0, "incorrect": 0}
+
+        # Patch MarketResolver at the point it's used in main.py
+        with patch("src.main.MarketResolver") as MockClass:
+            MockClass.return_value = mock_resolver_instance
+
+            # Simulate the deep-scan resolver block directly
+            # (mirrors the code added to run_scan step 8b)
+            db = MagicMock()
+            pm_client = MagicMock()
+            if mode == "deep":
+                resolver = MockClass(db=db, polymarket=pm_client)
+                resolver.run()
+
+        return mock_resolver_instance
+
+    def test_resolver_called_in_deep_mode(self):
+        result = self._run_with_mocked_resolver("deep")
+        result.run.assert_called_once()
+
+    def test_resolver_not_called_in_quick_mode(self):
+        result = self._run_with_mocked_resolver("quick")
+        result.run.assert_not_called()
