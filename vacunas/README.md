@@ -38,6 +38,7 @@ Un script Python que corrige datos en Supabase como consecuencia de un bug en el
 | 2026-02-19 | `aplicadas/2026-02-19_retroactive_merge_detection.py` | Detección retroactiva de merges CLOB (wallet compró YES y NO del mismo mercado). LIMITACIÓN: sin tabla de trades raw solo detecta casos con trades de dirección mixta en alerts.wallets (resultado esperado: 0 filas). El filtro N12 cubre casos futuros en tiempo real. | 0 (N12 no existía antes de este commit) | manual | SI |
 | 2026-02-19 | `aplicadas/2026-02-19_dashboard_merge_cleanup.py` | Marcar is_secondary=True en alertas pending con N12 y star_level≤1. 0 filas — N12 no existía en alertas históricas. | 0 | manual | SI |
 | 2026-02-19 | *(directo DB)* | Label manual: alerts #677 y #678 (Bank of Israel, NO 5★, outcome=correct) confirmadas como merge CLOB por el operador. merge_suspected=True, merge_confirmed=True. Primer caso de ground truth para ML. | 2 alertas | manual | SI |
+| 2026-02-19 | `aplicadas/2026-02-19_reset_price_based_resolutions.py` | Reset de 431 alertas falsamente resueltas por _resolve_by_price() (odds=1.0 sin CLOB winner). Diagnóstico previo: 439 candidatas, 8 CLOB-confirmadas mantenidas, 431 reseteadas a pending. Re-resolución inmediata: 0 (ningún mercado tenía winner=True en ese momento). Complemento del fix en resolver.py que eliminó _resolve_by_price() y fallback price>0.9. | 431 alertas → pending | manual | NO (re-ejecutar resolver para re-resolver las que cierren) |
 
 ---
 

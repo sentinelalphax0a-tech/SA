@@ -35,10 +35,14 @@ Aplicada en producción: NO
 ============================================================
 
 Resultado de ejecución:
-  - Fecha ejecución: (pendiente)
-  - Filas reseteadas: ?
-  - Re-resueltas por CLOB: ?
-  - Pendientes finales: ?
+  - Fecha ejecución: 2026-02-19 02:43–02:45 UTC
+  - Filas reseteadas a pending: 431
+  - Mantenidas como 'correct' (CLOB winner=True): 8
+    (#176, #234, #319, #477, #523, #546, #566, #1053)
+  - Re-resueltas por resolver nuevo (CLOB): 0
+    (ningún mercado tenía winner=True en ese momento)
+  - Alertas pending totales tras vacuna: 734
+  - Alertas 'correct' con odds=1.0 restantes: 8 (solo confirmadas)
 """
 
 import logging
