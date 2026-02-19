@@ -269,19 +269,12 @@ class PolymarketClient:
                     elif outcome_str == "NO":
                         return {"resolved": True, "outcome": "NO"}
 
-            # 5. Fallback: no winner flag but closed — use price
-            for token in tokens:
-                outcome_str = (token.get("outcome") or "").upper()
-                price = token.get("price")
-                if price is not None:
-                    if outcome_str == "YES" and float(price) > 0.9:
-                        return {"resolved": True, "outcome": "YES"}
-                    if outcome_str == "NO" and float(price) > 0.9:
-                        return {"resolved": True, "outcome": "NO"}
-
-            # 6. Closed but outcome unclear — don't resolve
+            # 5. Closed but no winner flag yet — don't resolve
+            # A market can be closed=True (trading stopped) but winner not yet
+            # set by Polymarket. Resolving by price here would cause false
+            # resolutions. Wait for the explicit winner flag.
             logger.warning(
-                "Market %s is closed but no clear outcome, skipping",
+                "Market %s is closed but winner flag not set yet, skipping",
                 market_id[:16],
             )
             return None

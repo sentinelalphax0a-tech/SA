@@ -382,8 +382,8 @@ class TestGetMarketResolution:
         result = client.get_market_resolution("0xABC")
         assert result == {"resolved": False}
 
-    def test_fallback_to_price_when_no_winner(self):
-        """closed=True, no winner flag, but Yes price > 0.9 → YES."""
+    def test_closed_no_winner_flag_returns_none(self):
+        """closed=True but no winner flag → None (wait for explicit winner)."""
         client = self._make_client(_clob_response(
             condition_id="0xABC", closed=True, active=True,
             end_date_iso="2020-01-01T00:00:00Z",
@@ -393,10 +393,10 @@ class TestGetMarketResolution:
             ],
         ))
         result = client.get_market_resolution("0xABC")
-        assert result == {"resolved": True, "outcome": "YES"}
+        assert result is None
 
-    def test_fallback_price_no_wins(self):
-        """closed=True, no winner, No price > 0.9 → NO."""
+    def test_closed_no_winner_flag_returns_none_even_with_high_no_price(self):
+        """closed=True, No price=0.98, but no winner flag → None (strict)."""
         client = self._make_client(_clob_response(
             condition_id="0xABC", closed=True, active=True,
             end_date_iso="2020-01-01T00:00:00Z",
@@ -406,7 +406,7 @@ class TestGetMarketResolution:
             ],
         ))
         result = client.get_market_resolution("0xABC")
-        assert result == {"resolved": True, "outcome": "NO"}
+        assert result is None
 
     def test_ambiguous_prices_returns_none(self):
         """closed=True but prices are 0.5/0.5 and no winner → None."""

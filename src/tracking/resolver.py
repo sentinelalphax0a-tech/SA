@@ -58,11 +58,9 @@ class MarketResolver:
                 logger.error("Failed to check resolution for %s: %s", mid, e)
 
         if not resolved_markets:
-            logger.info("No markets resolved this cycle — trying price-based fallback")
-        else:
-            pass  # continue to step 4
+            logger.info("No markets resolved this cycle")
 
-        # 4. Resolve matching alerts (API-confirmed)
+        # 4. Resolve matching alerts (API-confirmed only)
         n_correct = 0
         n_incorrect = 0
 
@@ -82,21 +80,15 @@ class MarketResolver:
                     "Failed to resolve alert #%s: %s", alert.get("id"), e,
                 )
 
-        # 5. Price-based fallback: resolve remaining pending alerts where
-        #    odds_max=1.0 or odds_min=1.0 (direction-adjusted price hit
-        #    certainty). These are markets that resolved but Polymarket API
-        #    still returns active=True, so the normal resolver skips them.
-        n_price = self._resolve_by_price()
-
-        n_total = n_correct + n_incorrect + n_price
+        n_total = n_correct + n_incorrect
         logger.info(
-            "Resolved %d correct, %d incorrect (API) + %d (price-based) = %d total",
-            n_correct, n_incorrect, n_price, n_total,
+            "Resolved %d correct, %d incorrect = %d total",
+            n_correct, n_incorrect, n_total,
         )
 
         return {
             "resolved": n_total,
-            "correct": n_correct + n_price,  # price-based are always correct
+            "correct": n_correct,
             "incorrect": n_incorrect,
         }
 
@@ -170,75 +162,6 @@ class MarketResolver:
         )
 
         return is_correct
-
-    def _resolve_by_price(self) -> int:
-        """Price-based fallback: resolve pending alerts where odds_max=1.0
-        or odds_min=1.0 (direction-adjusted price reached certainty).
-
-        When the direction-adjusted price of a token hits 1.0, the market
-        has resolved in favour of that direction with absolute certainty.
-        The normal resolver skips these because Polymarket API sometimes
-        still returns active=True for officially unprocessed markets.
-
-        Only fires after the API-based pass so it only touches alerts that
-        the normal resolver didn't handle.
-
-        Returns the number of alerts resolved.
-        """
-        try:
-            candidates = (
-                self.db.client.table("alerts")
-                .select(
-                    "id,direction,odds_at_alert,odds_max,odds_max_date,"
-                    "odds_min,odds_min_date,wallets,market_question,"
-                    "created_at,timestamp"
-                )
-                .eq("outcome", "pending")
-                .or_("odds_max.eq.1,odds_min.eq.1")
-                .execute()
-                .data
-            ) or []
-        except Exception as e:
-            logger.warning("Price-based resolution query failed: %s", e)
-            return 0
-
-        if not candidates:
-            return 0
-
-        logger.info(
-            "[price-resolver] %d pending alerts with odds=1.0 found", len(candidates)
-        )
-
-        resolved = 0
-        for alert in candidates:
-            try:
-                direction = (alert.get("direction") or "YES").upper()
-
-                # Determine resolved_at: prefer the date when odds first hit 1.0
-                if alert.get("odds_max") == 1.0 and alert.get("odds_max_date"):
-                    resolved_at = self._parse_timestamp(alert["odds_max_date"])
-                elif alert.get("odds_min") == 1.0 and alert.get("odds_min_date"):
-                    resolved_at = self._parse_timestamp(alert["odds_min_date"])
-                else:
-                    resolved_at = None
-
-                # market_outcome == direction because direction-adjusted odds
-                # reached 1.0 → direction won
-                self._resolve_alert(alert, direction, resolved_at=resolved_at)
-                resolved += 1
-                logger.info(
-                    "[price-resolver] Resolved alert #%s as correct"
-                    " (direction=%s, odds_max=%.4f)",
-                    alert["id"],
-                    direction,
-                    alert.get("odds_max") or 0,
-                )
-            except Exception as e:
-                logger.error(
-                    "[price-resolver] Failed for alert #%s: %s", alert.get("id"), e
-                )
-
-        return resolved
 
     @staticmethod
     def _direction_adjust(odds: float, direction: str) -> float:
