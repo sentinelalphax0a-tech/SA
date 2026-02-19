@@ -513,6 +513,71 @@ def compute_stats(alerts: list[dict], markets: dict) -> dict:
     }
 
 
+# ── Alert grouping ───────────────────────────────────────────
+
+
+def group_alerts_by_market(alerts: list[dict]) -> list[dict]:
+    """Group alerts by (market_id, direction), one row per pair.
+
+    YES and NO signals on the same market are kept separate — they are
+    independent trading signals.
+
+    Within each group:
+      - The alert with the highest star_level (then score) becomes primary.
+      - Remaining alerts are collapsed into primary["siblings"],
+        primary["siblings_count"], and primary["siblings_by_star"]
+        (only stars >= 3 are counted in the badge).
+
+    Non-pending alerts (correct / incorrect) are never grouped — they are
+    passed through as-is to preserve the resolution history view.
+    """
+    from collections import defaultdict
+
+    pending: list[dict] = []
+    resolved: list[dict] = []
+    for a in alerts:
+        if a.get("outcome", "pending") == "pending":
+            pending.append(a)
+        else:
+            resolved.append(a)
+
+    # Group pending by (market_id, direction)
+    groups: dict[tuple, list[dict]] = defaultdict(list)
+    for a in pending:
+        key = (a.get("market_id", ""), (a.get("direction") or "YES").upper())
+        groups[key].append(a)
+
+    grouped_pending: list[dict] = []
+    for key, group in groups.items():
+        # Sort: highest star first, then highest score as tiebreak
+        group.sort(
+            key=lambda x: (x.get("star_level") or 0, x.get("score") or 0),
+            reverse=True,
+        )
+        primary = group[0]
+        siblings = group[1:]
+
+        by_star: dict[str, int] = {}
+        for s in siblings:
+            star = s.get("star_level") or 0
+            if star >= 3:
+                by_star[str(star)] = by_star.get(str(star), 0) + 1
+
+        primary["siblings_count"] = len(siblings)
+        primary["siblings_by_star"] = by_star
+        primary["siblings"] = siblings
+
+        grouped_pending.append(primary)
+
+    # Sort grouped pending: highest star first, then most recent
+    grouped_pending.sort(
+        key=lambda x: (x.get("star_level") or 0, x.get("created_at") or ""),
+        reverse=True,
+    )
+
+    return grouped_pending + resolved
+
+
 # ── HTML generation ──────────────────────────────────────────
 
 
@@ -550,6 +615,7 @@ def generate(output_dir: Path | None = None) -> Path:
     logger.info("Fetched %d alerts, %d markets", len(data["alerts"]), len(data["markets"]))
 
     enriched = enrich_alerts(data["alerts"], data["markets"], data.get("hold_durations"))
+    enriched = group_alerts_by_market(enriched)
     stats = compute_stats(data["alerts"], data["markets"])
     stats["last_scan"] = data["last_scan"]
     stats["sell_events"] = data.get("sell_events", [])

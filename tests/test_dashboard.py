@@ -11,6 +11,7 @@ from src.dashboard.generate_dashboard import (
     compute_stats,
     enrich_alerts,
     generate,
+    group_alerts_by_market,
 )
 
 
@@ -430,3 +431,97 @@ class TestEntryPrice:
         )]
         result = enrich_alerts(alerts, {})
         assert result[0]["entry_price"] == 0.40
+
+
+class TestGroupAlertsByMarket:
+    """Tests for group_alerts_by_market()."""
+
+    def _a(self, market_id="m1", direction="YES", star=3, score=60, outcome="pending", alert_id=1):
+        return {
+            "id": alert_id,
+            "market_id": market_id,
+            "direction": direction,
+            "star_level": star,
+            "score": score,
+            "outcome": outcome,
+            "market_question": "Test?",
+            "created_at": "2026-02-19T00:00:00Z",
+        }
+
+    def test_single_alert_no_siblings(self):
+        alerts = [self._a()]
+        result = group_alerts_by_market(alerts)
+        assert len(result) == 1
+        assert result[0]["siblings_count"] == 0
+        assert result[0]["siblings"] == []
+
+    def test_same_market_same_direction_groups(self):
+        alerts = [
+            self._a(star=5, score=90, alert_id=1),
+            self._a(star=4, score=70, alert_id=2),
+            self._a(star=3, score=50, alert_id=3),
+        ]
+        result = group_alerts_by_market(alerts)
+        assert len(result) == 1
+        primary = result[0]
+        assert primary["id"] == 1          # highest star wins
+        assert primary["siblings_count"] == 2
+        assert primary["siblings_by_star"] == {"4": 1, "3": 1}
+        assert len(primary["siblings"]) == 2
+
+    def test_yes_and_no_not_grouped(self):
+        alerts = [
+            self._a(direction="YES", star=5, alert_id=1),
+            self._a(direction="NO",  star=5, alert_id=2),
+        ]
+        result = group_alerts_by_market(alerts)
+        assert len(result) == 2            # different signals, kept separate
+
+    def test_different_markets_not_grouped(self):
+        alerts = [
+            self._a(market_id="mA", alert_id=1),
+            self._a(market_id="mB", alert_id=2),
+        ]
+        result = group_alerts_by_market(alerts)
+        assert len(result) == 2
+
+    def test_resolved_alerts_pass_through_ungrouped(self):
+        alerts = [
+            self._a(outcome="correct", alert_id=1),
+            self._a(outcome="correct", alert_id=2),
+        ]
+        result = group_alerts_by_market(alerts)
+        # Resolved alerts are never grouped
+        assert len(result) == 2
+        assert all("siblings_count" not in a for a in result)
+
+    def test_pending_and_resolved_mixed(self):
+        alerts = [
+            self._a(star=5, alert_id=1, outcome="pending"),
+            self._a(star=4, alert_id=2, outcome="pending"),
+            self._a(star=3, alert_id=3, outcome="correct"),
+        ]
+        result = group_alerts_by_market(alerts)
+        # 1 grouped pending + 1 resolved = 2 rows
+        assert len(result) == 2
+        pending_row = next(r for r in result if r.get("siblings_count") is not None)
+        assert pending_row["id"] == 1
+        assert pending_row["siblings_count"] == 1
+
+    def test_siblings_by_star_only_counts_3plus(self):
+        alerts = [
+            self._a(star=5, score=90, alert_id=1),
+            self._a(star=2, score=30, alert_id=2),  # below 3★ — not in badge
+            self._a(star=1, score=10, alert_id=3),
+        ]
+        result = group_alerts_by_market(alerts)
+        assert len(result) == 1
+        assert result[0]["siblings_by_star"] == {}  # 2★ and 1★ excluded
+
+    def test_highest_score_tiebreaks_on_equal_stars(self):
+        alerts = [
+            self._a(star=4, score=60, alert_id=1),
+            self._a(star=4, score=90, alert_id=2),
+        ]
+        result = group_alerts_by_market(alerts)
+        assert result[0]["id"] == 2   # higher score wins tiebreak

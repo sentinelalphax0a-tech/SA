@@ -198,6 +198,7 @@
         .badge-incorrect { background: rgba(248, 81, 73, 0.15); color: var(--red); }
         .badge-merge-confirmed { background: rgba(240, 136, 62, 0.2); color: var(--star-4); }
         .badge-merge-suspected { background: rgba(210, 153, 34, 0.2); color: var(--yellow); }
+        .badge-siblings   { background: rgba(88, 166, 255, 0.12); color: var(--blue); font-size: 0.7rem; }
         .badge-held       { background: rgba(63, 185, 80, 0.15); color: var(--green); }
         .badge-sold-early { background: rgba(210, 153, 34, 0.15); color: var(--yellow); }
 
@@ -702,6 +703,17 @@ function renderTable() {
         else if (outcome === 'correct') statusHtml = '<span class="status-badge badge-correct">Correct</span>';
         else statusHtml = '<span class="status-badge badge-incorrect">Incorrect</span>';
 
+        // Siblings badge (grouped duplicates)
+        let siblingsHtml = '';
+        if (a.siblings_count > 0) {
+            const parts = Object.entries(a.siblings_by_star || {})
+                .sort((x, y) => Number(y[0]) - Number(x[0]))
+                .map(([star, n]) => `${'★'.repeat(Number(star))}×${n}`)
+                .join(', ');
+            const tip = parts ? ` (${parts})` : '';
+            siblingsHtml = ` <span class="status-badge badge-siblings" title="Mismas wallets detectadas en ${a.siblings_count} scan(s) adicional(es)${tip}">+${a.siblings_count} más${tip ? ': ' + parts : ''}</span>`;
+        }
+
         // Merge badge
         if (a.merge_confirmed) {
             statusHtml += ' <span class="status-badge badge-merge-confirmed" title="Wallet compró YES y NO — posición neta ≈ $0">MERGE CONFIRMED</span>';
@@ -738,7 +750,7 @@ function renderTable() {
         html += `
         <tr class="${rowCls}" onclick="toggleRow(${id})" data-id="${id}">
             <td class="star-cell star-${star}">${starEmoji(star)}${a.has_sells ? ' <span style="color:var(--yellow);font-size:0.75rem">\U0001f534 ' + (a.sold_pct_display || '') + '</span>' : ''}</td>
-            <td class="market-question" title="${(a.market_question || '').replace(/"/g, '&quot;')}">${a.market_question || ''}</td>
+            <td class="market-question" title="${(a.market_question || '').replace(/"/g, '&quot;')}">${a.market_question || ''}${siblingsHtml}</td>
             <td>${a.direction || ''}</td>
             <td class="col-score">${a.score || 0}</td>
             <td class="col-entry">${formatOdds(a.entry_price)}</td>
