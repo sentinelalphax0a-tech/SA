@@ -961,7 +961,7 @@ def _backfill_hold_durations(db: SupabaseClient) -> int:
                 anchor = anchor.replace(tzinfo=timezone.utc)
             if sell_ts.tzinfo is None:
                 sell_ts = sell_ts.replace(tzinfo=timezone.utc)
-            hold_h = round((sell_ts - anchor).total_seconds() / 3600, 2)
+            hold_h = round(max(0.0, (sell_ts - anchor).total_seconds() / 3600), 2)
             db.client.table("wallet_positions").update(
                 {"hold_duration_hours": hold_h}
             ).eq("id", row["id"]).execute()
