@@ -209,6 +209,11 @@ FILTER_N09B = {"id": "N09b", "name": "Apuesta obvia", "points": -25, "category":
 FILTER_N10A = {"id": "N10a", "name": "Horizonte lejano", "points": -10, "category": "negative"}
 FILTER_N10B = {"id": "N10b", "name": "Horizonte muy lejano", "points": -20, "category": "negative"}
 FILTER_N10C = {"id": "N10c", "name": "Horizonte extremo", "points": -30, "category": "negative"}
+# Merge sospechoso — wallet compró YES y NO del mismo mercado (CLOB arbitrage)
+# Comparación en tokens/shares, no en dólares. A odds extremas ($90 YES@0.90 + $10 NO@0.10)
+# los dólares parecen asimétricos pero los tokens se cancelan exactamente (100 shares cada lado).
+# Detecta arbitrage CLOB, NO merges CTF (invisibles por diseño de la capa de resolución).
+FILTER_N12 = {"id": "N12", "name": "Merge sospechoso", "points": -40, "category": "negative"}
 
 # Master registry: id → filter dict
 ALL_FILTERS: dict[str, dict] = {
@@ -237,6 +242,7 @@ ALL_FILTERS: dict[str, dict] = {
         FILTER_N07A, FILTER_N07B, FILTER_N08,
         FILTER_N09A, FILTER_N09B,
         FILTER_N10A, FILTER_N10B, FILTER_N10C,
+        FILTER_N12,
     ]
 }
 
@@ -417,6 +423,21 @@ OBVIOUS_BET_STAR_CAP_HIGH: int = 3     # N09b (price > 0.85) → max 3★
 LONG_HORIZON_EXTREME: int = 90      # N10c: > 90 days → -30
 LONG_HORIZON_HIGH: int = 60         # N10b: > 60 days → -20
 LONG_HORIZON_MODERATE: int = 30     # N10a: > 30 days → -10
+
+# Merge detection thresholds (N12)
+# Comparison is in tokens/shares, NOT dollars.
+# At extreme odds ($90 YES@0.90 + $10 NO@0.10) the dollars look asymmetric
+# but both sides produce 100 shares — the exact merge case.
+MERGE_WINDOW_HOURS: int = 12        # max spread between first YES and first NO trade
+MERGE_NET_THRESHOLD: float = 0.15   # net_shares < 15% of larger side → merge
+MERGE_MIN_SHARES: float = 1000.0    # smaller side must have > 1000 shares (ignore dust)
+MERGE_MIN_SCORE_NOTIFY: int = 100   # min score to send Telegram merge notification
+
+# Sell detector net position thresholds
+SELL_NET_TOTAL_THRESHOLD: float = 0.20   # < 20% remaining → SALIDA TOTAL
+SELL_NET_PARTIAL_THRESHOLD: float = 0.60 # 20-60% remaining → SALIDA PARCIAL
+SELL_POST_SCAN_LOOKBACK_HOURS: int = 48  # lookback for --post-scan-check
+SELL_POST_SCAN_MAX_ALERTS: int = 200     # cap to avoid runaway runtime
 
 # Known exchanges for origin detection (O01) — Polygon hot wallets
 KNOWN_EXCHANGES: dict[str, str] = {

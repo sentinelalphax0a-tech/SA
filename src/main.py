@@ -162,6 +162,11 @@ def _build_alert(
     elif len(wallet_data) >= config.CONFLUENCE_BASIC_MIN_WALLETS:
         alert_type = config.ALERT_TYPE_CONFLUENCE
 
+    # N12 in filters → merge_suspected flag
+    merge_suspected = any(
+        f.filter_id == "N12" for f in scoring_result.filters_triggered
+    )
+
     return Alert(
         market_id=market.market_id,
         alert_type=alert_type,
@@ -177,6 +182,7 @@ def _build_alert(
         confluence_count=len(wallet_data),
         confluence_type=confluence_type,
         filters_triggered=[asdict(f) for f in scoring_result.filters_triggered],
+        merge_suspected=merge_suspected,
     )
 
 
@@ -513,6 +519,7 @@ def run_scan(
     mode: str = "quick",
     dry_run: bool = False,
     lookback_override: int | None = None,
+    post_scan_check: bool = False,
 ) -> None:
     """Execute a single scan cycle.
 
@@ -522,6 +529,9 @@ def run_scan(
         dry_run: If True, run full pipeline but skip all DB writes and
                  Telegram/X publishing. Logs what would have been done.
         lookback_override: If set, override the profile's lookback_minutes.
+        post_scan_check: If True, run net position check after scan to detect
+                         CTF merges, transfers, burns (invisible to CLOB API).
+                         Skipped automatically in GitHub Actions.
     """
     # Suppress noisy HTTP client logging
     logging.getLogger("httpx").setLevel(logging.WARNING)
@@ -796,6 +806,24 @@ def run_scan(
                         counters=counters,
                         dry_run=False,
                     )
+                    # Merge notification (independent of main alert publication)
+                    if alert.merge_suspected and (alert.score or 0) >= config.MERGE_MIN_SCORE_NOTIFY:
+                        try:
+                            merge_detail = next(
+                                (
+                                    f.get("details", "")
+                                    for f in (alert.filters_triggered or [])
+                                    if f.get("filter_id") == "N12"
+                                ),
+                                None,
+                            )
+                            msg = AlertFormatter().format_merge_notification(alert, merge_detail)
+                            telegram.send_message(msg)
+                            logger.info(
+                                "Merge notification sent for alert #%s", alert_id
+                            )
+                        except Exception as e:
+                            logger.debug("Merge notification failed for alert #%s: %s", alert_id, e)
             except Exception as e:
                 logger.error("Failed to save/publish alert: %s", e)
 
@@ -803,6 +831,9 @@ def run_scan(
         if not dry_run:
             try:
                 sell_detector = SellDetector(db_client=db, polymarket_client=pm_client)
+                formatter_inst = AlertFormatter()
+
+                # CLOB-visible sells
                 sell_events = sell_detector.check_open_positions()
                 for event in sell_events:
                     try:
@@ -810,7 +841,33 @@ def run_scan(
                     except Exception as e:
                         logger.debug("Sell notification failed: %s", e)
                 if sell_events:
-                    logger.info("Sell monitoring: %d events detected", len(sell_events))
+                    logger.info("Sell monitoring: %d CLOB sell events detected", len(sell_events))
+
+                # Post-scan net position check (detects CTF merges, transfers, burns)
+                if post_scan_check:
+                    try:
+                        net_events = sell_detector.check_net_positions()
+                        for event in net_events:
+                            try:
+                                msg = formatter_inst.format_position_gone(event)
+                                telegram.send_message(msg, parse_mode="")
+                            except Exception as e:
+                                logger.debug("Position gone notification failed: %s", e)
+                        if net_events:
+                            logger.info(
+                                "Post-scan net check: %d position events detected",
+                                len(net_events),
+                            )
+                    except Exception as e:
+                        logger.error("Post-scan net position check failed: %s", e)
+
+                # Merge resolution (always runs, capped at 20 alerts)
+                try:
+                    merge_result = sell_detector.check_merge_resolution()
+                    logger.info("Merge resolution check: %s", merge_result)
+                except Exception as e:
+                    logger.debug("check_merge_resolution failed: %s", e)
+
             except Exception as e:
                 logger.error("Sell monitoring failed: %s", e)
         else:
@@ -1421,5 +1478,16 @@ if __name__ == "__main__":
         metavar="MINUTES",
         help="Override trade lookback window (default: 35min quick, 1440min deep)",
     )
+    parser.add_argument(
+        "--post-scan-check",
+        action="store_true",
+        help="Run net position check after scan to detect CTF merges, transfers, and burns "
+             "(invisible to CLOB API). Adds ~30-60s. Skipped automatically in GitHub Actions.",
+    )
     args = parser.parse_args()
-    run_scan(mode=args.mode, dry_run=args.dry_run, lookback_override=args.lookback)
+    run_scan(
+        mode=args.mode,
+        dry_run=args.dry_run,
+        lookback_override=args.lookback,
+        post_scan_check=args.post_scan_check,
+    )

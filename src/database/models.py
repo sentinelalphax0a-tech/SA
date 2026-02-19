@@ -105,6 +105,12 @@ class Alert:
     is_secondary: bool = False              # True for non-primary alerts in a group
     alert_group_id: str | None = None       # Shared UUID across alerts from same market scan
     secondary_count: int = 0                # Number of secondary alerts (set on primary)
+    # ── Merge detection ──
+    # merge_suspected: wallet bought both YES and NO of same market (CLOB arbitrage).
+    # Comparison is in tokens/shares (not dollars). Does NOT capture CTF-layer merges
+    # (those are invisible to the CLOB API by design). Label for ML, not final diagnosis.
+    merge_suspected: bool = False
+    merge_confirmed: bool = False           # set by check_merge_resolution() when net<$500
     created_at: datetime = field(default_factory=datetime.utcnow)
 
 
@@ -310,6 +316,10 @@ class WalletPosition:
     sell_amount: float = 0.0
     sell_timestamp: datetime | None = None
     alert_id: int | None = None
+    # close_reason: ML label for how the position closed. Not a definitive diagnosis.
+    # Values: 'sell_clob' | 'merge_suspected' | 'net_zero' | 'position_gone'
+    # 'position_gone' captures CTF merges, transfers, burns — any exit not visible in CLOB.
+    close_reason: str | None = None
     created_at: datetime = field(default_factory=datetime.utcnow)
     updated_at: datetime = field(default_factory=datetime.utcnow)
 

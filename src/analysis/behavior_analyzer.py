@@ -81,6 +81,10 @@ class BehaviorAnalyzer:
         all_trades: list[TradeEvent] | None = None,
         resolution_date: datetime | None = None,
     ) -> list[FilterResult]:
+        # NOTE: `trades` (wallet_trades) already contains both YES and NO trades
+        # for this wallet because get_recent_trades() fetches the full market and
+        # _group_trades_by_wallet() groups without direction filtering.
+        # Merge check uses this mixed list directly — zero extra API calls.
         """Run all B and N filters for a wallet's trades in a specific market.
 
         Args:
@@ -95,7 +99,7 @@ class BehaviorAnalyzer:
         Returns:
             List of triggered FilterResult objects.
         """
-        # Filter to relevant trades for this wallet + market
+        # Filter to relevant trades for this wallet + market (ALL directions)
         relevant = [
             t for t in trades
             if t.wallet_address == wallet_address and t.market_id == market_id
@@ -104,6 +108,14 @@ class BehaviorAnalyzer:
             return []
 
         relevant.sort(key=lambda t: t.timestamp)
+
+        # ── N12 — Merge detection (run first, before accumulation filters) ──
+        # Must run before _build_accumulation so merge signal is captured even
+        # if the accumulation total would be inflated by mixed-direction trades.
+        results_pre: list[FilterResult] = self._check_merge(relevant)
+        if results_pre:
+            # Return early only with N12 — all other filters still run below
+            pass  # merge result appended to final results after
 
         # Build accumulation window from trades
         accum = self._build_accumulation(relevant)
@@ -117,6 +129,7 @@ class BehaviorAnalyzer:
         wallet = self._get_wallet(wallet_address)
 
         results: list[FilterResult] = []
+        results.extend(results_pre)  # N12 merge (if detected)
         results.extend(self._check_drip(relevant))
         results.extend(self._check_market_orders(relevant))
         results.extend(self._check_increasing_size(relevant))
@@ -837,3 +850,81 @@ class BehaviorAnalyzer:
             config.FILTER_B20,
             f"wallet_age={wallet.wallet_age_days}d, pm_activity={pm_days}d",
         )]
+
+    # ── N12 — Merge detection ─────────────────────────────────
+
+    def _check_merge(self, trades: list[TradeEvent]) -> list[FilterResult]:
+        """N12 — Wallet bought both YES and NO of the same market (CLOB arbitrage).
+
+        Merge detection compares TOKEN SHARES, not dollars.
+        Rationale: at odds 0.90/0.10, buying $90 YES and $10 NO costs $100
+        but produces 100 YES shares and 100 NO shares — a perfect hedge.
+        The dollar amounts look asymmetric; the shares are identical.
+
+        Formula:
+            shares_YES = sum(amount / price for YES trades)
+            shares_NO  = sum(amount / price for NO trades)
+            net_shares = abs(shares_YES - shares_NO)
+            lado_mayor = max(shares_YES, shares_NO)
+
+        Criteria (ALL must hold):
+            - Wallet has trades in both YES and NO
+            - First YES trade and first NO trade within MERGE_WINDOW_HOURS (12h)
+            - net_shares < MERGE_NET_THRESHOLD (15%) of lado_mayor
+            - Smaller side > MERGE_MIN_SHARES (1000 shares) — ignore dust
+
+        Limitation: only detects CLOB-visible merges within the current
+        scan's lookback window. CTF-layer merges (burning YES+NO pairs
+        via the CTF contract) are invisible to this API.
+        """
+        yes_trades = [t for t in trades if t.direction == "YES"]
+        no_trades = [t for t in trades if t.direction == "NO"]
+
+        if not yes_trades or not no_trades:
+            return []
+
+        # Time window: first YES and first NO within MERGE_WINDOW_HOURS
+        first_yes = min(t.timestamp for t in yes_trades)
+        first_no = min(t.timestamp for t in no_trades)
+        time_spread = abs((first_yes - first_no).total_seconds()) / 3600
+        if time_spread > config.MERGE_WINDOW_HOURS:
+            return []
+
+        # Share calculation (tokens, not dollars)
+        shares_yes = sum(
+            t.amount / t.price for t in yes_trades if t.price > 0
+        )
+        shares_no = sum(
+            t.amount / t.price for t in no_trades if t.price > 0
+        )
+
+        lado_mayor = max(shares_yes, shares_no)
+        lado_menor = min(shares_yes, shares_no)
+
+        if lado_menor <= 0:
+            return []
+
+        # Ignore dust positions
+        if lado_menor < config.MERGE_MIN_SHARES:
+            return []
+
+        net_shares = abs(shares_yes - shares_no)
+        if net_shares >= lado_mayor * config.MERGE_NET_THRESHOLD:
+            return []
+
+        # Dollar totals for the detail string (readability only — NOT the criterion)
+        usd_yes = sum(t.amount for t in yes_trades)
+        usd_no = sum(t.amount for t in no_trades)
+
+        detail = (
+            f"YES={shares_yes:,.0f} shares (${usd_yes:,.0f}), "
+            f"NO={shares_no:,.0f} shares (${usd_no:,.0f}), "
+            f"net={net_shares:,.0f} shares ({net_shares / lado_mayor * 100:.1f}% desequilibrio), "
+            f"ventana={time_spread:.1f}h"
+        )
+        logger.info(
+            "[N12] Merge suspected for %s: %s",
+            (trades[0].wallet_address if trades else "?")[:10],
+            detail,
+        )
+        return [_fr(config.FILTER_N12, detail)]

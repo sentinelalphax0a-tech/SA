@@ -554,6 +554,98 @@ class AlertFormatter:
 
         return "\n".join(lines)
 
+    # ── Merge notification ───────────────────────────────────
+
+    def format_merge_notification(self, alert: Alert, merge_detail: str | None = None) -> str:
+        """Format a merge detection notification for Telegram.
+
+        Sent independently of the main alert when merge_suspected=True
+        and score >= MERGE_MIN_SCORE_NOTIFY. Uses 🔄 emoji.
+
+        merge_detail: the N12 filter detail string (shares, dollars, window).
+        """
+        alert_id = alert.id or "?"
+        question = alert.market_question or "?"
+        market_id = alert.market_id or ""
+        direction = alert.direction or "?"
+
+        lines = [
+            "\U0001f504 MERGE DETECTADO \u2014 Sentinel Alpha",
+            "\u2500" * 26,
+            "",
+            f'\U0001f4ca "{question}"',
+            f"\U0001f4c8 Direcci\u00f3n alerta: {direction}",
+            f"\U0001f194 Alert #{alert_id} (score: {alert.score})",
+            "",
+            "\u26a0\ufe0f Wallet compr\u00f3 YES y NO del mismo mercado (CLOB arbitrage).",
+            "   Posici\u00f3n neta pr\u00f3xima a cero \u2014 se\u00f1al de cautela, no confirmaci\u00f3n.",
+        ]
+
+        if merge_detail:
+            lines.append("")
+            lines.append(f"\U0001f9ee Detalle (shares/tokens, no d\u00f3lares):")
+            lines.append(f"   {merge_detail}")
+
+        lines.extend([
+            "",
+            "\U0001f517 https://polymarket.com/event/" + market_id,
+            "\u2500" * 26,
+            "\u2139\ufe0f merge_suspected marcado en DB. Score reducido -40pts (N12).",
+        ])
+
+        return "\n".join(lines)
+
+    # ── Position gone notification ────────────────────────────
+
+    def format_position_gone(self, sell_event: dict) -> str:
+        """Format a 'position gone' notification for Telegram.
+
+        Sent when net token position < 20% of original without explicit
+        CLOB sells detected. Likely cause: CTF merge, transfer, or burn.
+        These are invisible to the Data API by design.
+        """
+        question = sell_event.get("market_question") or sell_event.get("market_id", "?")
+        market_id = sell_event.get("market_id", "")
+        wallets = sell_event.get("wallets", [])
+        direction = wallets[0].get("direction", "?") if wallets else "?"
+
+        lines = [
+            "\U0001f504 POSICI\u00d3N DESAPARECIDA \u2014 Sentinel Alpha",
+            "\u2500" * 26,
+            "",
+            f'\U0001f4ca "{question}"',
+            f"\U0001f4c8 Direcci\u00f3n: {direction}",
+        ]
+
+        for w in wallets[:3]:
+            addr = w.get("address", "?")
+            short = f"{addr[:6]}...{addr[-4:]}" if len(addr) > 10 else addr
+            orig = w.get("original_amount", 0)
+            rem = w.get("remaining_pct", 0)
+            lines.append(f"   \U0001f45b {short}: ${orig:,.0f} original \u2192 ~{rem:.0f}% restante")
+
+        close_reason = sell_event.get("close_reason", "position_gone")
+        if close_reason == "merge_suspected":
+            lines.extend([
+                "",
+                "\U0001f504 Causa probable: merge CLOB (compr\u00f3 direcci\u00f3n opuesta)",
+            ])
+        else:
+            lines.extend([
+                "",
+                "\U0001f504 Sin ventas CLOB detectadas.",
+                "   Posible: merge CTF (burn YES+NO), transfer o burn fuera del CLOB.",
+                "   Nota: merges CTF son invisibles a la API por dise\u00f1o.",
+            ])
+
+        lines.extend([
+            "",
+            f"\U0001f517 https://polymarket.com/event/{market_id}",
+            "\u2500" * 26,
+        ])
+
+        return "\n".join(lines)
+
     # ── Backward-compatible aliases ──────────────────────────
 
     def format_x(self, alert: Alert) -> str:
