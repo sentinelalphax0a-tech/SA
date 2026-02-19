@@ -548,7 +548,8 @@ def run_scan(
         pm_client = PolymarketClient()
         chain_client = BlockchainClient()
         news = NewsChecker()
-        wallet_analyzer = WalletAnalyzer(db, chain_client, pm_client=pm_client)
+        _max_hops = config.SCAN_PROFILES[mode].get("max_funding_hops", config.MAX_FUNDING_HOPS)
+        wallet_analyzer = WalletAnalyzer(db, chain_client, pm_client=pm_client, max_hops=_max_hops)
         behavior_analyzer = BehaviorAnalyzer(db_client=db, pm_client=pm_client)
         market_analyzer = MarketAnalyzer(db_client=db, polymarket_client=pm_client)
         noise_filter = NoiseFilter(news_checker=news, db_client=db)
@@ -1004,7 +1005,7 @@ def _process_market(
                 if not existing:
                     try:
                         funding = chain_client.get_funding_sources(
-                            addr, max_hops=config.MAX_FUNDING_HOPS
+                            addr, max_hops=profile.get("max_funding_hops", config.MAX_FUNDING_HOPS)
                         )
                         if funding:
                             db.insert_funding_batch(funding)

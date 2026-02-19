@@ -187,7 +187,7 @@ class ConfluenceDetector:
         results.extend(self._check_similar_amounts(sender_to_wallets, funding_map))
 
         # ── Layer 4: Distribution network (C07) ─────────────────
-        results.extend(self._check_distribution_network(wallets_with_scores, sender_to_wallets))
+        results.extend(self._check_distribution_network(wallets_with_scores, sender_to_wallets, funding_map))
 
         return results
 
@@ -320,7 +320,9 @@ class ConfluenceDetector:
             if sender_type in fired_types:
                 continue
 
-            detail = f"sender={sender[:10]}…, {len(funded_addrs)} wallets"
+            hop_level = self._get_sender_hop_level(sender, funding_map)
+            hop_tag = f" [hop{hop_level}]" if hop_level > 1 else ""
+            detail = f"sender={sender[:10]}…, {len(funded_addrs)} wallets{hop_tag}"
 
             if sender_type == "exchange":
                 exchange_name = self._get_sender_label(sender, funding_map, "exchange_name")
@@ -383,6 +385,23 @@ class ConfluenceDetector:
                     if label:
                         return label
         return sender[:10] + "…"
+
+    @staticmethod
+    def _get_sender_hop_level(sender: str, funding_map: dict[str, list[dict]]) -> int:
+        """Return the minimum hop_level at which this sender appears.
+
+        Minimum = most direct path. Returns 1 if unknown (conservative default).
+        Used to annotate C03a-d and C07 details when a shared parent is found
+        via a deep hop (e.g. [hop2] or [hop3] in deep scan mode).
+        """
+        levels: list[int] = []
+        for fundings in funding_map.values():
+            for f in fundings:
+                if f.get("sender_address") == sender:
+                    lvl = f.get("hop_level")
+                    if lvl is not None:
+                        levels.append(int(lvl))
+        return min(levels) if levels else 1
 
     # ── Layer 3: C05 — Temporal funding ───────────────────────
 
@@ -467,6 +486,7 @@ class ConfluenceDetector:
         self,
         wallets: list[dict],
         sender_to_wallets: dict[str, set[str]],
+        funding_map: dict[str, list[dict]] | None = None,
     ) -> list[FilterResult]:
         """C07 — One sender funded 3+ wallets active in this market."""
         active_addrs = {w["address"] for w in wallets}
@@ -474,9 +494,14 @@ class ConfluenceDetector:
         for sender, funded_addrs in sender_to_wallets.items():
             active_funded = funded_addrs & active_addrs
             if len(active_funded) >= config.DISTRIBUTION_MIN_WALLETS:
+                hop_tag = ""
+                if funding_map:
+                    hop_level = self._get_sender_hop_level(sender, funding_map)
+                    if hop_level > 1:
+                        hop_tag = f" [hop{hop_level}]"
                 return [_fr(
                     config.FILTER_C07,
-                    f"distributor={sender[:10]}…, {len(active_funded)} wallets funded",
+                    f"distributor={sender[:10]}…, {len(active_funded)} wallets funded{hop_tag}",
                 )]
 
         return []

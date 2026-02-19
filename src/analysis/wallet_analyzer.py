@@ -35,10 +35,17 @@ def _fr(filt: dict, details: str | None = None) -> FilterResult:
 class WalletAnalyzer:
     """Evaluates wallet-level and origin filters."""
 
-    def __init__(self, db: SupabaseClient, chain: BlockchainClient, pm_client=None) -> None:
+    def __init__(
+        self,
+        db: SupabaseClient,
+        chain: BlockchainClient,
+        pm_client=None,
+        max_hops: int = config.MAX_FUNDING_HOPS,
+    ) -> None:
         self.db = db
         self.chain = chain
         self.pm_client = pm_client
+        self.max_hops = max_hops
 
     # Minimum points from basic (non-funding) checks before we spend
     # API calls on funding source analysis.
@@ -83,7 +90,7 @@ class WalletAnalyzer:
 
         if basic_score >= self._MIN_BASIC_SCORE_FOR_FUNDING:
             funding = self.chain.get_funding_sources(
-                wallet_address, max_hops=config.MAX_FUNDING_HOPS
+                wallet_address, max_hops=self.max_hops
             )
             if funding:
                 try:
@@ -207,7 +214,7 @@ class WalletAnalyzer:
         if funding is None:
             try:
                 funding = self.chain.get_funding_sources(
-                    wallet.address, max_hops=config.MAX_FUNDING_HOPS
+                    wallet.address, max_hops=self.max_hops
                 )
             except Exception:
                 return []

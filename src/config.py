@@ -650,6 +650,7 @@ SCAN_PROFILES: dict = {
         "categories": MARKET_CATEGORIES,             # politics, economics, geopolitics
         "relevant_categories": MARKET_RELEVANT_CATEGORIES,
         "extra_blacklist": [],
+        "max_funding_hops": 2,                       # funding BFS depth (quick keeps 2)
     },
     "deep": {
         "min_volume": 200,
@@ -660,5 +661,6 @@ SCAN_PROFILES: dict = {
         "categories": MARKET_CATEGORIES + ["science"],
         "relevant_categories": DEEP_RELEVANT_CATEGORIES,
         "extra_blacklist": DEEP_EXTRA_BLACKLIST,
+        "max_funding_hops": 3,                       # deeper BFS for 24h scan
     },
 }
