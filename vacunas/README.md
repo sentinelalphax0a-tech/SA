@@ -35,8 +35,8 @@ Un script Python que corrige datos en Supabase como consecuencia de un bug en el
 | 2026-02-19 | `aplicadas/2026-02-19_star_level_downgrade_persistence_bug.py` | Bug de persistencia histórico: filters_triggered solo guardaba market filters, omitiendo wallet/behavior/confluence → star_level inflado respecto a categorías verificables | 2 alertas (580: 5★→4★, 631: 5★→2★) | manual | NO |
 | 2026-02-19 | `aplicadas/2026-02-19_odds_boundary_pending.py` | 436 alertas con outcome=pending y odds_max/min=1.0: resolver normal requiere closed=True de API pero Polymarket mantiene active=True — fix en resolver.py + vacuna retroactiva | 436 alertas → todas correct (avg +32.5%) | manual | NO |
 | 2026-02-19 | `aplicadas/2026-02-19_delete_historical_noise_alerts.py` | Eliminar alertas 340/580/631/649: daño histórico de persistencia irrecuperable (score_raw vs computed delta 14-216 pts) — ruido para ML | 17 filas (4 alerts + 9 wallet_positions + 4 alert_tracking) | manual | NO |
-| 2026-02-19 | `2026-02-19_retroactive_merge_detection.py` | Detección retroactiva de merges CLOB (wallet compró YES y NO del mismo mercado). LIMITACIÓN: sin tabla de trades raw solo detecta casos con trades de dirección mixta en alerts.wallets (resultado esperado: 0 filas). El filtro N12 cubre casos futuros en tiempo real. | 0 (esperado) | manual | SI |
-| 2026-02-19 | `2026-02-19_dashboard_merge_cleanup.py` | Marcar is_secondary=True en alertas pending con N12 y star_level≤1 que no fueron filtradas por el gate 0★ retroactivamente | <20 | manual | SI |
+| 2026-02-19 | `aplicadas/2026-02-19_retroactive_merge_detection.py` | Detección retroactiva de merges CLOB (wallet compró YES y NO del mismo mercado). LIMITACIÓN: sin tabla de trades raw solo detecta casos con trades de dirección mixta en alerts.wallets (resultado esperado: 0 filas). El filtro N12 cubre casos futuros en tiempo real. | 0 (N12 no existía antes de este commit) | manual | SI |
+| 2026-02-19 | `aplicadas/2026-02-19_dashboard_merge_cleanup.py` | Marcar is_secondary=True en alertas pending con N12 y star_level≤1. 0 filas — N12 no existía en alertas históricas. | 0 | manual | SI |
 
 ---
 

@@ -22,9 +22,10 @@ Commit que introdujo el fix en código: (ver git log FILTER_N12)
 ============================================================
 
 Resultado de ejecución:
-  - Fecha ejecución: [YYYY-MM-DD HH:MM UTC]
-  - Filas modificadas: [N]
-  - Observaciones: [ninguna / detalles]
+  - Fecha ejecución: 2026-02-19 02:03 UTC
+  - Filas modificadas: 0
+  - Observaciones: 0 filas. N12 no existía en alertas históricas —
+    no hay candidatos. Futuros casos quedan cubiertos por el gate 0★ en main.py.
 """
 
 import logging
