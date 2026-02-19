@@ -33,15 +33,17 @@ Estrategia:
 Tablas afectadas: alerts (campo is_secondary)
 Filas estimadas: ~40 secundarias (verificar con DRY_RUN=True)
 Reversible: SÍ — rollback vuelve is_secondary=False en las mismas filas
-Aplicada en producción: NO
+Aplicada en producción: SÍ (2026-02-19 10:53 UTC)
 Commit asociado: 6f6406d (dashboard grouping)
 ============================================================
 
 Resultado de ejecución:
-  - Fecha ejecución: [YYYY-MM-DD HH:MM UTC]
-  - Grupos procesados: [N mercados]
-  - Filas marcadas is_secondary=True: [N]
-  - Observaciones: [ninguna / detalles]
+  - Fecha ejecución: 2026-02-19 10:53 UTC
+  - Grupos procesados: 35 mercados con duplicados
+  - Filas marcadas is_secondary=True: 33 (nuevas) + 50 previas = 83 total
+  - Verificación: ningún grupo con 2+ primarias pending
+  - Total is_secondary en DB post-vacuna: 609
+  - Observaciones: ninguna
 """
 
 import logging
@@ -61,7 +63,7 @@ logger = logging.getLogger(__name__)
 
 # ── Configuración ──────────────────────────────────────────
 # Cambiar a False solo después de revisar el diagnóstico DRY_RUN.
-DRY_RUN = True
+DRY_RUN = False
 
 # Solo grupos con este mínimo de estrellas activan la consolidación.
 # Alertas de 1-2★ se dejan como están (ruido aceptable).
