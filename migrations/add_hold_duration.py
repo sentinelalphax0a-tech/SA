@@ -34,16 +34,29 @@ def _column_exists(db: SupabaseClient, table: str, column: str) -> bool:
         return False
 
 
+_SQL = "ALTER TABLE wallet_positions ADD COLUMN IF NOT EXISTS hold_duration_hours FLOAT;"
+
+
 def migrate(db: SupabaseClient) -> None:
     if _column_exists(db, "wallet_positions", "hold_duration_hours"):
         logger.info("wallet_positions.hold_duration_hours already exists — skipping")
-    else:
-        logger.info("Adding wallet_positions.hold_duration_hours ...")
-        db.client.rpc(
-            "exec_sql",
-            {"sql": "ALTER TABLE wallet_positions ADD COLUMN IF NOT EXISTS hold_duration_hours FLOAT;"},
-        ).execute()
-        logger.info("  OK")
+        return
+
+    logger.info("Adding wallet_positions.hold_duration_hours ...")
+    try:
+        db.client.rpc("exec_sql", {"sql": _SQL}).execute()
+        logger.info("  OK via exec_sql RPC")
+    except Exception as rpc_err:
+        logger.warning("exec_sql RPC not available (%s).", rpc_err)
+        logger.info("")
+        logger.info("═" * 60)
+        logger.info("Ejecuta este SQL en el Supabase SQL editor:")
+        logger.info("")
+        logger.info("  %s", _SQL)
+        logger.info("")
+        logger.info("Supabase dashboard → SQL editor → New query → Run")
+        logger.info("═" * 60)
+        sys.exit(1)
 
     logger.info("Migration complete.")
 
