@@ -31,7 +31,7 @@ Tablas afectadas: alerts, alert_tracking (implícito por resolver)
 Filas a resetear: ~435 (verificado en diagnóstico)
 Reversible: NO directo — el resolver re-resolverá las verdaderas.
             Backup de estado anterior disponible en sección ROLLBACK.
-Aplicada en producción: NO
+Aplicada en producción: SÍ (2026-02-19 02:43–02:45 UTC)
 ============================================================
 
 Resultado de ejecución:
