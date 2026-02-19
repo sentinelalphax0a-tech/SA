@@ -196,6 +196,8 @@
         .badge-active { background: rgba(63, 185, 80, 0.15); color: var(--green); }
         .badge-correct { background: rgba(139, 148, 158, 0.15); color: var(--text-secondary); }
         .badge-incorrect { background: rgba(248, 81, 73, 0.15); color: var(--red); }
+        .badge-merge-confirmed { background: rgba(240, 136, 62, 0.2); color: var(--star-4); }
+        .badge-merge-suspected { background: rgba(210, 153, 34, 0.2); color: var(--yellow); }
 
         .market-question {
             max-width: 300px;
@@ -625,7 +627,7 @@ function renderHeader() {
         </div>
         <div class="stat-card">
             <div class="stat-value stat-yellow">${s.accuracy_3plus != null ? s.accuracy_3plus + '%' : '--'}</div>
-            <div class="stat-label">Accuracy 3+&#9733;</div>
+            <div class="stat-label">Accuracy 3+&#9733;${s.merge_confirmed_count ? `<br><small style="color:var(--star-4)">${s.merge_confirmed_count} merge excl.</small>` : ''}</div>
         </div>
         <div class="stat-card">
             <div class="stat-value stat-red">${s.alerts_with_sells || 0}</div>
@@ -695,6 +697,13 @@ function renderTable() {
         if (outcome === 'pending') statusHtml = '<span class="status-badge badge-active">Active</span>';
         else if (outcome === 'correct') statusHtml = '<span class="status-badge badge-correct">Correct</span>';
         else statusHtml = '<span class="status-badge badge-incorrect">Incorrect</span>';
+
+        // Merge badge
+        if (a.merge_confirmed) {
+            statusHtml += ' <span class="status-badge badge-merge-confirmed" title="Wallet compró YES y NO — posición neta ≈ $0">MERGE CONFIRMED</span>';
+        } else if (a.merge_suspected) {
+            statusHtml += ' <span class="status-badge badge-merge-suspected" title="Wallet compró YES y NO — posición neta ≈ $0">MERGE SUSPECTED</span>';
+        }
 
         // P&L
         let pnlHtml = '--';

@@ -241,13 +241,20 @@ def compute_stats(alerts: list[dict], markets: dict) -> dict:
         a for a in alerts if a.get("outcome") in ("correct", "incorrect")
     ]
     resolved = len(resolved_list)
+    # Merge counters
+    merge_confirmed_count = sum(1 for a in alerts if a.get("merge_confirmed"))
+    merge_suspected_count = sum(
+        1 for a in alerts if a.get("merge_suspected") and not a.get("merge_confirmed")
+    )
+    # Exclude merge_confirmed from accuracy/P&L — not real trading signals
+    stats_resolved = [a for a in resolved_list if not a.get("merge_confirmed")]
     correct_3plus = sum(
         1
-        for a in resolved_list
+        for a in stats_resolved
         if a.get("outcome") == "correct" and (a.get("star_level") or 0) >= 3
     )
     total_3plus = sum(
-        1 for a in resolved_list if (a.get("star_level") or 0) >= 3
+        1 for a in stats_resolved if (a.get("star_level") or 0) >= 3
     )
     accuracy_3plus = (
         round((correct_3plus / total_3plus) * 100, 1) if total_3plus > 0 else None
@@ -262,17 +269,19 @@ def compute_stats(alerts: list[dict], markets: dict) -> dict:
             for a in star_alerts
             if a.get("outcome") in ("correct", "incorrect")
         ]
+        # Exclude merge_confirmed from accuracy/return stats
+        star_stats = [a for a in star_resolved if not a.get("merge_confirmed")]
         star_correct = sum(
-            1 for a in star_resolved if a.get("outcome") == "correct"
+            1 for a in star_stats if a.get("outcome") == "correct"
         )
-        star_incorrect = len(star_resolved) - star_correct
+        star_incorrect = len(star_stats) - star_correct
         star_pending = sum(
             1 for a in star_alerts if a.get("outcome") == "pending"
         )
         denom = star_correct + star_incorrect
         returns = [
             a.get("actual_return")
-            for a in star_resolved
+            for a in star_stats
             if a.get("actual_return") is not None
         ]
         by_star[str(star)] = {
@@ -305,7 +314,7 @@ def compute_stats(alerts: list[dict], markets: dict) -> dict:
     # Accuracy over time (weekly buckets, 3+ star only)
     accuracy_over_time = []
     week_groups: dict[str, dict] = defaultdict(lambda: {"correct": 0, "total": 0})
-    for a in resolved_list:
+    for a in stats_resolved:
         if (a.get("star_level") or 0) < 3:
             continue
         dt = _parse_dt(a.get("resolved_at") or a.get("created_at"))
@@ -331,7 +340,7 @@ def compute_stats(alerts: list[dict], markets: dict) -> dict:
     pnl_alerts = sorted(
         [
             a
-            for a in resolved_list
+            for a in stats_resolved
             if (a.get("star_level") or 0) >= 3
             and a.get("actual_return") is not None
         ],
@@ -353,7 +362,7 @@ def compute_stats(alerts: list[dict], markets: dict) -> dict:
     filter_correct: dict[str, int] = defaultdict(int)
     filter_incorrect: dict[str, int] = defaultdict(int)
     filter_names: dict[str, str] = {}
-    for a in resolved_list:
+    for a in stats_resolved:
         filters = a.get("filters_triggered") or []
         bucket = (
             filter_correct if a.get("outcome") == "correct" else filter_incorrect
@@ -430,6 +439,8 @@ def compute_stats(alerts: list[dict], markets: dict) -> dict:
         "resolved_alerts": resolved,
         "accuracy_3plus": accuracy_3plus,
         "alerts_with_sells": alerts_with_sells,
+        "merge_confirmed_count": merge_confirmed_count,
+        "merge_suspected_count": merge_suspected_count,
         "by_star": by_star,
         "alerts_per_day": alerts_per_day,
         "accuracy_over_time": accuracy_over_time,
