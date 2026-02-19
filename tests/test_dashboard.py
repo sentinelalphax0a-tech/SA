@@ -176,6 +176,26 @@ class TestComputeStats:
         assert stats["accuracy_3plus"] is None
         assert stats["by_star"]["1"]["count"] == 0
 
+    def test_alerts_with_sells_excludes_secondaries(self):
+        """Secondary alerts with total_sold_pct > 0 must not count."""
+        alerts = [
+            _alert(id=1, total_sold_pct=0.5, is_secondary=False),
+            _alert(id=2, total_sold_pct=0.3, is_secondary=True),   # secondary → excluded
+            _alert(id=3, total_sold_pct=0.0, is_secondary=False),  # no sell → excluded
+            _alert(id=4, total_sold_pct=1.0, is_secondary=False),
+        ]
+        stats = compute_stats(alerts, {})
+        assert stats["alerts_with_sells"] == 2  # only id=1 and id=4
+
+    def test_alerts_with_sells_counts_primaries_only(self):
+        """All primary, all with sells → count all."""
+        alerts = [
+            _alert(id=1, total_sold_pct=0.5, is_secondary=False),
+            _alert(id=2, total_sold_pct=0.8, is_secondary=False),
+        ]
+        stats = compute_stats(alerts, {})
+        assert stats["alerts_with_sells"] == 2
+
     def test_filter_distribution_counts(self):
         alerts = [
             _alert(

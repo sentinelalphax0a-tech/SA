@@ -395,7 +395,12 @@ class WhaleMonitor:
             new_total = min(1.0, current_sold + sell_pct)
             self.db.update_alert_sell_metadata(alert_id, new_total)
         except Exception as e:
-            logger.error("Failed to update alert sell metadata #%s: %s", alert_id, e)
+            logger.error(
+                "Failed to update alert sell metadata #%s "
+                "(sell_pct=%.3f, event_type=%s): %s",
+                alert_id, sell_pct, event.get("type"), e,
+                exc_info=True,
+            )
 
         # Log as SELL_EVENT for cooldown dedup
         try:

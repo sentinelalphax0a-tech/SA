@@ -25,6 +25,7 @@ from src.main import (
     _deduplicate_alerts,
     _filter_markets,
     _backfill_hold_durations,
+    _reconcile_sell_totals,
     run_scan,
 )
 from src import config
@@ -777,4 +778,101 @@ class TestBackfillHoldDurations:
         db = MagicMock()
         db.client.table.return_value.select.side_effect = Exception("DB error")
         count = _backfill_hold_durations(db)
+        assert count == 0
+
+
+# ── _reconcile_sell_totals ────────────────────────────────────
+
+
+class TestReconcileSellTotals:
+    """Tests for _reconcile_sell_totals()."""
+
+    def _make_db(self, events: list[dict], alert_rows: list[dict]):
+        """Build a mock db that returns events then alert rows on consecutive .select() calls."""
+        db = MagicMock()
+
+        events_chain = MagicMock()
+        events_chain.execute.return_value = MagicMock(data=events)
+
+        alerts_select_chain = MagicMock()
+        alerts_select_chain.in_.return_value = alerts_select_chain
+        alerts_select_chain.execute.return_value = MagicMock(data=alert_rows)
+
+        update_chain = MagicMock()
+        update_chain.eq.return_value = update_chain
+        update_chain.execute.return_value = MagicMock()
+
+        alerts_tbl = MagicMock()
+        alerts_tbl.select.return_value = alerts_select_chain
+        alerts_tbl.update.return_value = update_chain
+
+        def table_side_effect(name):
+            if name == "alert_sell_events":
+                tbl = MagicMock()
+                tbl.select.return_value = events_chain
+                return tbl
+            return alerts_tbl
+
+        db.client.table.side_effect = table_side_effect
+        return db, alerts_tbl, update_chain
+
+    def test_updates_alert_when_stored_value_differs(self):
+        """One event with sell_pct=0.5, alert stored as 0.0 → should update."""
+        events = [{"alert_id": 1, "sell_pct": 0.5}]
+        alert_rows = [{"id": 1, "total_sold_pct": 0.0, "is_secondary": False}]
+        db, alerts_tbl, update_chain = self._make_db(events, alert_rows)
+
+        count = _reconcile_sell_totals(db)
+        assert count == 1
+        update_chain.execute.assert_called_once()
+
+    def test_skips_alert_when_value_matches(self):
+        """Stored value matches computed → no update."""
+        events = [{"alert_id": 1, "sell_pct": 0.5}]
+        alert_rows = [{"id": 1, "total_sold_pct": 0.5, "is_secondary": False}]
+        db, alerts_tbl, update_chain = self._make_db(events, alert_rows)
+
+        count = _reconcile_sell_totals(db)
+        assert count == 0
+
+    def test_sums_multiple_events_per_alert(self):
+        """Two partial events of 0.3 + 0.4 = 0.7 total."""
+        events = [
+            {"alert_id": 5, "sell_pct": 0.3},
+            {"alert_id": 5, "sell_pct": 0.4},
+        ]
+        alert_rows = [{"id": 5, "total_sold_pct": 0.0, "is_secondary": False}]
+        db, alerts_tbl, update_chain = self._make_db(events, alert_rows)
+
+        count = _reconcile_sell_totals(db)
+        assert count == 1
+        update_data = alerts_tbl.update.call_args[0][0]
+        assert abs(update_data["total_sold_pct"] - 0.7) < 1e-5
+
+    def test_caps_total_at_one(self):
+        """Sum > 1.0 should be capped at 1.0."""
+        events = [
+            {"alert_id": 3, "sell_pct": 0.6},
+            {"alert_id": 3, "sell_pct": 0.6},
+        ]
+        alert_rows = [{"id": 3, "total_sold_pct": 0.0, "is_secondary": False}]
+        db, alerts_tbl, update_chain = self._make_db(events, alert_rows)
+
+        count = _reconcile_sell_totals(db)
+        assert count == 1
+        update_data = alerts_tbl.update.call_args[0][0]
+        assert update_data["total_sold_pct"] == 1.0
+
+    def test_returns_zero_when_no_events(self):
+        """No events → nothing to reconcile."""
+        db, alerts_tbl, update_chain = self._make_db([], [])
+        count = _reconcile_sell_totals(db)
+        assert count == 0
+        update_chain.execute.assert_not_called()
+
+    def test_query_failure_returns_zero(self):
+        """DB query failure is handled gracefully."""
+        db = MagicMock()
+        db.client.table.return_value.select.side_effect = Exception("conn error")
+        count = _reconcile_sell_totals(db)
         assert count == 0

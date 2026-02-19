@@ -488,9 +488,10 @@ def compute_stats(alerts: list[dict], markets: dict) -> dict:
             }
         )
 
-    # Sell Watch stats
+    # Sell Watch stats — exclude secondaries so we count unique signals only
     alerts_with_sells = sum(
-        1 for a in alerts if (a.get("total_sold_pct") or 0) > 0
+        1 for a in alerts
+        if (a.get("total_sold_pct") or 0) > 0 and not a.get("is_secondary")
     )
 
     return {

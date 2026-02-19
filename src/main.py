@@ -887,6 +887,11 @@ def run_scan(
                     except Exception as e:
                         logger.error("hold_duration backfill failed: %s", e)
 
+                    try:
+                        _reconcile_sell_totals(db)
+                    except Exception as e:
+                        logger.error("sell totals reconciliation failed: %s", e)
+
             except Exception as e:
                 logger.error("Sell monitoring failed: %s", e)
         else:
@@ -973,6 +978,84 @@ def _backfill_hold_durations(db: SupabaseClient) -> int:
             )
 
     logger.info("_backfill_hold_durations: updated %d positions", updated)
+    return updated
+
+
+def _reconcile_sell_totals(db: SupabaseClient) -> int:
+    """Reconcile alerts.total_sold_pct against alert_sell_events.
+
+    For each alert_id present in alert_sell_events, recalculates the correct
+    total_sold_pct as min(1.0, sum(sell_pct)) and updates the alerts row if
+    the stored value differs by more than a float rounding tolerance.
+
+    This corrects silent write failures from whale_monitor and any other
+    desync between the two tables.
+
+    Returns the number of alerts updated.
+    """
+    try:
+        events = (
+            db.client.table("alert_sell_events")
+            .select("alert_id,sell_pct")
+            .execute()
+            .data
+        ) or []
+    except Exception as e:
+        logger.error("_reconcile_sell_totals: query alert_sell_events failed: %s", e)
+        return 0
+
+    if not events:
+        logger.debug("_reconcile_sell_totals: no sell events found")
+        return 0
+
+    # Aggregate sell_pct per alert_id
+    from collections import defaultdict as _dd
+    sums: dict[int, float] = _dd(float)
+    for ev in events:
+        aid = ev.get("alert_id")
+        pct = ev.get("sell_pct") or 0.0
+        if aid is not None:
+            sums[aid] += pct
+
+    alert_ids = list(sums.keys())
+
+    # Fetch current total_sold_pct for those alerts
+    try:
+        rows = (
+            db.client.table("alerts")
+            .select("id,total_sold_pct,is_secondary")
+            .in_("id", alert_ids)
+            .execute()
+            .data
+        ) or []
+    except Exception as e:
+        logger.error("_reconcile_sell_totals: query alerts failed: %s", e)
+        return 0
+
+    current: dict[int, float] = {r["id"]: (r.get("total_sold_pct") or 0.0) for r in rows}
+
+    updated = 0
+    for alert_id, raw_sum in sums.items():
+        correct = round(min(1.0, raw_sum), 6)
+        stored = round(current.get(alert_id, 0.0), 6)
+        if abs(correct - stored) < 1e-5:
+            continue
+        try:
+            db.client.table("alerts").update(
+                {"total_sold_pct": correct}
+            ).eq("id", alert_id).execute()
+            logger.info(
+                "_reconcile_sell_totals: alert #%d %.4f → %.4f",
+                alert_id, stored, correct,
+            )
+            updated += 1
+        except Exception as e:
+            logger.error(
+                "_reconcile_sell_totals: failed to update alert #%d: %s",
+                alert_id, e,
+            )
+
+    logger.info("_reconcile_sell_totals: updated %d alerts", updated)
     return updated
 
 
