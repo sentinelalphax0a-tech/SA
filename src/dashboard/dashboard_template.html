@@ -224,6 +224,37 @@
             background: var(--bg-secondary);
             border-left: 3px solid var(--blue);
         }
+
+        /* ── Alert Timeline ─────────────────────────────── */
+        .timeline-section {
+            margin-top: 1.25rem;
+            padding-top: 1rem;
+            border-top: 1px solid var(--border);
+        }
+        .timeline-section h4 {
+            font-size: 0.85rem;
+            color: var(--text-secondary);
+            margin-bottom: 0.6rem;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+        }
+        .tl-event {
+            display: flex;
+            align-items: baseline;
+            gap: 0.5rem;
+            padding: 0.3rem 0;
+            font-size: 0.82rem;
+            border-left: 2px solid var(--border);
+            padding-left: 0.75rem;
+            margin-left: 0.25rem;
+        }
+        .tl-event + .tl-event { margin-top: 0.15rem; }
+        .tl-initial { border-left-color: var(--blue); }
+        .tl-sell { border-left-color: var(--red); }
+        .tl-merge { border-left-color: var(--yellow, #f59e0b); }
+        .tl-resolution { border-left-color: var(--green); }
+        .tl-date { color: var(--text-secondary); white-space: nowrap; }
+        .tl-label { color: var(--text-primary); }
         .detail-grid {
             display: grid;
             grid-template-columns: 1fr 1fr;
@@ -769,6 +800,83 @@ function renderTable() {
     body.innerHTML = html;
 }
 
+function fmtDate(iso) {
+    if (!iso) return '—';
+    try {
+        const d = new Date(iso);
+        return d.toLocaleString([], { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' });
+    } catch { return iso; }
+}
+
+function renderTimeline(a) {
+    let html = '<div class="timeline-section"><h4>Timeline</h4>';
+
+    // T0: initial detection
+    const initStar = a.star_level_initial != null ? ` &middot; Inicial: ${a.star_level_initial}★` : '';
+    const walletCount = (a.wallets || []).length;
+    const totalAmt = a.total_amount ? ` &middot; $${a.total_amount.toLocaleString()}` : '';
+    html += `<div class="tl-event tl-initial">
+        <span class="tl-date">${fmtDate(a.created_at)}</span>
+        <span class="tl-label">📍 Detección inicial${initStar} &middot; ${walletCount} wallet${walletCount !== 1 ? 's' : ''}${totalAmt}</span>
+    </div>`;
+
+    // Merge CLOB sells + position closures into a single chronological list
+    const sellEvents = (a.sell_events_history || []).map(se => ({
+        ts: se.detected_at,
+        kind: 'sell',
+        data: se,
+    }));
+    const closureEvents = (a.position_closures_history || []).map(pc => ({
+        ts: pc.sell_timestamp,
+        kind: 'closure',
+        data: pc,
+    }));
+    const allEvents = [...sellEvents, ...closureEvents].sort(
+        (x, y) => (x.ts || '').localeCompare(y.ts || '')
+    );
+
+    for (const ev of allEvents) {
+        if (ev.kind === 'sell') {
+            const se = ev.data;
+            const icon = se.event_type && se.event_type.toLowerCase().includes('coord') ? '🤝' : '📉';
+            const pct = se.sell_pct != null ? ` &middot; ${(se.sell_pct * 100).toFixed(0)}% vendido` : '';
+            const hold = se.held_hours != null ? ` &middot; Hold: ${se.held_hours.toFixed(1)}h` : '';
+            const evtType = se.event_type ? ` (${se.event_type})` : '';
+            html += `<div class="tl-event tl-sell">
+                <span class="tl-date">${fmtDate(se.detected_at)}</span>
+                <span class="tl-label">${icon} Venta${evtType}${pct}${hold}</span>
+            </div>`;
+        } else {
+            const pc = ev.data;
+            const reasonLabels = {
+                'merge_suspected': '🔀 Merge probable (CTF)',
+                'merge_confirmed': '🔀 Merge confirmado (CTF)',
+                'net_zero':        '⚠️ Posición neta cero',
+                'position_gone':   '👻 Posición desaparecida',
+            };
+            const label = reasonLabels[pc.close_reason] || `⚠️ ${pc.close_reason}`;
+            const wallet = pc.wallet_address ? ` &middot; ${pc.wallet_address.slice(0, 8)}...` : '';
+            html += `<div class="tl-event tl-merge">
+                <span class="tl-date">${fmtDate(pc.sell_timestamp)}</span>
+                <span class="tl-label">${label}${wallet}</span>
+            </div>`;
+        }
+    }
+
+    // Market resolution
+    if (a.outcome && a.outcome !== 'pending') {
+        const icon = a.outcome === 'correct' ? '✅' : '❌';
+        const finalStar = a.star_level ? ` &middot; ${a.star_level}★ final` : '';
+        html += `<div class="tl-event tl-resolution">
+            <span class="tl-date">${fmtDate(a.resolved_at)}</span>
+            <span class="tl-label">${icon} Mercado resuelto: ${a.outcome}${finalStar}</span>
+        </div>`;
+    }
+
+    html += '</div>';
+    return html;
+}
+
 function renderDetail(a) {
     const wallets = a.wallets || [];
 
@@ -790,7 +898,8 @@ function renderDetail(a) {
         <div class="detail-section">
             <h4>Wallets (${wallets.length})</h4>
             ${walletsHtml || '<p class="empty-state">No wallet data</p>'}
-        </div>`;
+        </div>
+        ${renderTimeline(a)}`;
     }
 
     // ── Full view (valid key) ────────────────────────
@@ -846,6 +955,24 @@ function renderDetail(a) {
     const mult = a.multiplier || 1.0;
     const finalScore = a.score || 0;
 
+    // Close reason (set by sell_detector.check_net_positions — non-CLOB exits)
+    let closeReasonHtml = '';
+    if (a.close_reason) {
+        const crLabels = {
+            'sell_clob':        'Venta CLOB confirmada',
+            'merge_suspected':  'Merge probable (CTF — invisible a CLOB)',
+            'merge_confirmed':  'Merge confirmado (CTF)',
+            'net_zero':         'Posición neta cero (transferencia/quema)',
+            'position_gone':    'Posición desaparecida (sin venta visible)',
+        };
+        const crLabel = crLabels[a.close_reason] || a.close_reason;
+        closeReasonHtml = `
+        <div style="margin-top:0.75rem;padding:0.5rem 0.75rem;background:var(--bg-tertiary);border-radius:4px;font-size:0.82rem">
+            <span style="color:var(--text-secondary)">Cierre detectado:</span>
+            <strong style="margin-left:0.4rem">${crLabel}</strong>
+        </div>`;
+    }
+
     // News
     let newsHtml = '';
     if (a.has_news && a.news_summary) {
@@ -862,13 +989,15 @@ function renderDetail(a) {
             <h4>Filters (${filters.length} triggered, ${rawScore} raw x ${mult.toFixed(2)} = ${finalScore})</h4>
             ${filtersHtml}
             ${oddsHtml}
+            ${closeReasonHtml}
             ${newsHtml}
         </div>
         <div class="detail-section">
             <h4>Wallets (${wallets.length})</h4>
             ${walletsHtml || '<p class="empty-state">No wallet data</p>'}
         </div>
-    </div>`;
+    </div>
+    ${renderTimeline(a)}`;
 }
 
 function toggleRow(id) {

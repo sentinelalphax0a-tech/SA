@@ -80,6 +80,9 @@ class Alert:
     score_raw: int | None = None
     multiplier: float = 1.0
     star_level: int | None = None
+    # Immutable: star level at first detection (ML training label).
+    # Set once on insert and never updated by cross-scan dedup or vacunas.
+    star_level_initial: int | None = None
     wallets: list[dict[str, Any]] | None = None
     total_amount: float | None = None
     odds_at_alert: float | None = None

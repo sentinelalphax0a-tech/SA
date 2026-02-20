@@ -258,13 +258,13 @@ def _get_primary_wallet(alert: Alert) -> str | None:
 
 def _check_cross_scan_duplicate(
     alert: Alert, db: SupabaseClient
-) -> tuple[int, int] | None:
+) -> dict | None:
     """Check if a cross-scan duplicate exists in the DB.
 
     Looks for an alert with the same market_id, direction, and primary
     wallet address created within the last CROSS_SCAN_DEDUP_HOURS hours.
 
-    Returns (existing_id, existing_score) if a duplicate is found, None otherwise.
+    Returns the existing alert dict if a duplicate is found, None otherwise.
     """
     primary_wallet = _get_primary_wallet(alert)
     if not primary_wallet:
@@ -285,7 +285,7 @@ def _check_cross_scan_duplicate(
             key=lambda w: w.get("total_amount", 0),
         )
         if existing_primary.get("address") == primary_wallet:
-            return existing.get("id"), existing.get("score", 0)
+            return existing
 
     return None
 
@@ -704,6 +704,8 @@ def run_scan(
                 # 8a-pre. Secondary alerts: insert to DB but don't publish
                 if alert.is_secondary:
                     if not dry_run:
+                        if alert.star_level_initial is None:
+                            alert.star_level_initial = alert.star_level
                         alert_id = db.insert_alert(alert)
                         alert.id = alert_id
                     else:
@@ -731,6 +733,8 @@ def run_scan(
                             alert.market_question[:50] if alert.market_question else alert.market_id[:12],
                         )
                     else:
+                        if alert.star_level_initial is None:
+                            alert.star_level_initial = alert.star_level
                         alert_id = db.insert_alert(alert)
                         alert.id = alert_id
                     counters["alerts_generated"] += 1
@@ -740,20 +744,42 @@ def run_scan(
                     continue
 
                 # 8b. Cross-scan dedup: check for existing alert in last 24h
-                existing_result = _check_cross_scan_duplicate(alert, db) if not dry_run else None
-                if existing_result is not None:
-                    existing_id, existing_score = existing_result
+                existing_alert = _check_cross_scan_duplicate(alert, db) if not dry_run else None
+                if existing_alert is not None:
+                    existing_id = existing_alert["id"]
+                    existing_score = existing_alert.get("score") or 0
+                    existing_star = existing_alert.get("star_level") or 0
+                    existing_amount = existing_alert.get("total_amount") or 0.0
+                    existing_wallets = existing_alert.get("wallets") or []
+
                     update_fields: dict = {
                         "odds_at_alert": alert.odds_at_alert,
-                        "total_amount": alert.total_amount,
-                        "wallets": alert.wallets,
                     }
-                    # Only upgrade scoring fields — never downgrade a published alert
-                    if (alert.score or 0) > (existing_score or 0):
+
+                    # Wallet merge: additive only — never replace existing wallets.
+                    # TODO: wallet amount updates for existing wallets not tracked —
+                    # would require per-wallet position comparison.
+                    new_wallets = _find_new_wallets(alert.wallets or [], existing_wallets)
+                    if new_wallets:
+                        update_fields["wallets"] = existing_wallets + new_wallets
+                        # Accumulate new wallet amounts on top of existing total
+                        new_wallets_amount = sum(
+                            w.get("total_amount", 0) for w in new_wallets
+                        )
+                        update_fields["total_amount"] = existing_amount + new_wallets_amount
+                    elif (alert.total_amount or 0) > existing_amount:
+                        # No new wallets, but existing wallet increased position
+                        update_fields["total_amount"] = alert.total_amount
+
+                    # Score and star: only upgrade, never downgrade a published alert
+                    if (alert.score or 0) > existing_score:
                         update_fields["score"] = alert.score
                         update_fields["score_raw"] = alert.score_raw
-                        update_fields["star_level"] = alert.star_level
                         update_fields["multiplier"] = alert.multiplier
+                        # Guard: star only moves strictly up, never sideways or down
+                        if (alert.star_level or 0) > existing_star:
+                            update_fields["star_level"] = alert.star_level
+
                     db.update_alert_fields(existing_id, update_fields)
                     alert.deduplicated = True
                     counters["alerts_cross_scan_dedup"] += 1
@@ -795,6 +821,9 @@ def run_scan(
                         dry_run=True,
                     )
                 else:
+                    # Fix star_level_initial at T0 — immutable ML label
+                    if alert.star_level_initial is None:
+                        alert.star_level_initial = alert.star_level
                     alert_id = db.insert_alert(alert)
                     alert.id = alert_id
                     counters["alerts_generated"] += 1

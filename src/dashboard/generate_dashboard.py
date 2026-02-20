@@ -29,13 +29,25 @@ TEMPLATE_PATH = Path(__file__).parent / "dashboard_template.html"
 
 def fetch_data(db: SupabaseClient) -> dict:
     """Fetch all data needed for the dashboard from Supabase."""
-    alerts_resp = (
-        db.client.table("alerts")
-        .select("*")
-        .order("created_at", desc=True)
-        .limit(5000)
-        .execute()
-    )
+    # Paginate alerts to bypass the PostgREST server-side max_rows=1000 cap.
+    # .limit(N) alone is silently overridden by the server; .range() forces
+    # explicit offsets and retrieves every row regardless of max_rows setting.
+    all_alerts: list[dict] = []
+    _PAGE = 1000
+    _offset = 0
+    while True:
+        _batch = (
+            db.client.table("alerts")
+            .select("*")
+            .order("created_at", desc=True)
+            .range(_offset, _offset + _PAGE - 1)
+            .execute()
+        )
+        _rows = _batch.data or []
+        all_alerts.extend(_rows)
+        if len(_rows) < _PAGE:
+            break
+        _offset += _PAGE
     markets_resp = db.client.table("markets").select("*").execute()
     scans_resp = (
         db.client.table("scans")
@@ -45,46 +57,66 @@ def fetch_data(db: SupabaseClient) -> dict:
         .execute()
     )
 
-    # Sell events (recent, for sell activity section)
+    # Sell events — two separate queries with different scopes:
+    # 1. Recent (7 days) → "Recent Sell Activity" section in dashboard
     try:
-        sell_events_resp = (
-            db.client.table("alert_sell_events")
-            .select("*")
-            .order("detected_at", desc=True)
-            .limit(50)
-            .execute()
-        )
-        sell_events = sell_events_resp.data or []
+        sell_events = db.get_recent_sell_events(hours=168)
     except Exception:
         sell_events = []
 
-    # Fetch hold durations from sold positions (for dashboard enrichment)
+    # 2. All time → per-alert timeline in detail rows (no temporal filter)
+    try:
+        all_sell_events_resp = (
+            db.client.table("alert_sell_events")
+            .select("*")
+            .order("detected_at", desc=False)  # chronological for timeline
+            .execute()
+        )
+        all_sell_events = all_sell_events_resp.data or []
+    except Exception:
+        all_sell_events = []
+
+    # Fetch sold positions for hold durations + merge/position_gone close reasons
     try:
         sold_resp = (
             db.client.table("wallet_positions")
-            .select("alert_id, hold_duration_hours")
+            .select("alert_id, hold_duration_hours, close_reason, wallet_address, sell_timestamp")
             .neq("current_status", "open")
-            .not_.is_("hold_duration_hours", "null")
             .execute()
         )
         # alert_id → minimum hold_duration_hours (earliest seller wins)
         hold_durations: dict[int, float] = {}
+        # alert_id → list of position closure events with close_reason (for timeline)
+        position_closures: dict[int, list[dict]] = {}
         for p in (sold_resp.data or []):
             aid = p.get("alert_id")
+            if not aid:
+                continue
             h = p.get("hold_duration_hours")
-            if aid and h is not None:
+            if h is not None:
                 if aid not in hold_durations or h < hold_durations[aid]:
                     hold_durations[aid] = h
+            # Collect non-CLOB closure reasons for the timeline
+            reason = p.get("close_reason")
+            if reason and reason != "sell_clob":
+                position_closures.setdefault(aid, []).append({
+                    "wallet_address": p.get("wallet_address"),
+                    "close_reason": reason,
+                    "sell_timestamp": p.get("sell_timestamp"),
+                })
     except Exception:
         hold_durations = {}
+        position_closures = {}
 
     markets_list = markets_resp.data or []
     return {
-        "alerts": alerts_resp.data or [],
+        "alerts": all_alerts,
         "markets": {m["market_id"]: m for m in markets_list},
         "last_scan": (scans_resp.data or [{}])[0] if scans_resp.data else {},
         "sell_events": sell_events,
+        "all_sell_events": all_sell_events,
         "hold_durations": hold_durations,
+        "position_closures": position_closures,
     }
 
 
@@ -162,9 +194,20 @@ def enrich_alerts(
     alerts: list[dict],
     markets: dict,
     hold_durations: dict | None = None,
+    all_sell_events: list[dict] | None = None,
+    position_closures: dict | None = None,
 ) -> list[dict]:
     """Add derived display fields to each alert."""
     now = datetime.now(timezone.utc)
+
+    # Build index of all sell events by alert_id for per-alert timeline.
+    # Uses all_sell_events (no temporal filter) so the timeline shows full history.
+    sell_by_alert: dict[int, list[dict]] = {}
+    for se in (all_sell_events or []):
+        aid = se.get("alert_id")
+        if aid:
+            sell_by_alert.setdefault(aid, []).append(se)
+
     enriched = []
 
     for alert in alerts:
@@ -265,6 +308,11 @@ def enrich_alerts(
         else:
             a["hold_label"] = None
             a["hold_display"] = None
+
+        # Per-alert sell history for timeline panel (all-time, no temporal filter)
+        a["sell_events_history"] = sell_by_alert.get(a.get("id"), [])
+        # Per-alert position closures (merge/position_gone events, not visible in CLOB)
+        a["position_closures_history"] = (position_closures or {}).get(a.get("id"), [])
 
         enriched.append(a)
 
@@ -615,7 +663,13 @@ def generate(output_dir: Path | None = None) -> Path:
     print(f"Fetched {len(data['alerts'])} alerts, {len(data['markets'])} markets")
     logger.info("Fetched %d alerts, %d markets", len(data["alerts"]), len(data["markets"]))
 
-    enriched = enrich_alerts(data["alerts"], data["markets"], data.get("hold_durations"))
+    enriched = enrich_alerts(
+        data["alerts"],
+        data["markets"],
+        data.get("hold_durations"),
+        data.get("all_sell_events"),
+        data.get("position_closures"),
+    )
     enriched = group_alerts_by_market(enriched)
     stats = compute_stats(data["alerts"], data["markets"])
     stats["last_scan"] = data["last_scan"]

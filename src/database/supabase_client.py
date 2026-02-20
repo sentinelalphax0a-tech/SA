@@ -249,7 +249,12 @@ class SupabaseClient:
         self.client.table("alerts").update(update).eq("id", alert_id).execute()
 
     def update_alert_fields(self, alert_id: int, fields: dict) -> None:
-        """Update specific fields on an existing alert row."""
+        """Update specific fields on an existing alert row.
+
+        # TODO(audit-trail): Before writing, snapshot old values and insert into
+        # alert_update_log(alert_id, changed_fields, old_values, new_values, ts).
+        # Deferred — implement when alert_update_log table is created in Supabase.
+        """
         if not fields:
             return
         self.client.table("alerts").update(fields).eq("id", alert_id).execute()
