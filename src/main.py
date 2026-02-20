@@ -776,6 +776,17 @@ def run_scan(
                         update_fields["score"] = alert.score
                         update_fields["score_raw"] = alert.score_raw
                         update_fields["multiplier"] = alert.multiplier
+                        # filters_triggered: always paired with score — the scan
+                        # that generated the higher score also generated the
+                        # richer filter set. Replace together or not at all.
+                        update_fields["filters_triggered"] = [
+                            {"filter_id": f.filter_id,
+                             "filter_name": f.filter_name,
+                             "points": f.points,
+                             "category": f.category,
+                             "details": f.details}
+                            for f in (alert.filters_triggered or [])
+                        ]
                         # Guard: star only moves strictly up, never sideways or down
                         if (alert.star_level or 0) > existing_star:
                             update_fields["star_level"] = alert.star_level
