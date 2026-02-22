@@ -129,16 +129,17 @@ class TestComputeStats:
         assert stats["resolved_alerts"] == 2
 
     def test_accuracy_3plus_stars(self):
+        # Each alert gets its own market_id so dedup treats them as independent signals.
         alerts = [
-            _alert(id=1, star_level=3, outcome="correct"),
-            _alert(id=2, star_level=3, outcome="correct"),
-            _alert(id=3, star_level=3, outcome="incorrect"),
-            _alert(id=4, star_level=4, outcome="correct"),
+            _alert(id=1, market_id="m1", star_level=3, outcome="correct"),
+            _alert(id=2, market_id="m2", star_level=3, outcome="correct"),
+            _alert(id=3, market_id="m3", star_level=3, outcome="incorrect"),
+            _alert(id=4, market_id="m4", star_level=4, outcome="correct"),
             # 2-star should not count
-            _alert(id=5, star_level=2, outcome="incorrect"),
+            _alert(id=5, market_id="m5", star_level=2, outcome="incorrect"),
         ]
         stats = compute_stats(alerts, {})
-        # 3 correct out of 4 resolved 3+ star = 75%
+        # 3 correct out of 4 resolved 3+ star unique signals = 75%
         assert stats["accuracy_3plus"] == 75.0
 
     def test_accuracy_excludes_pending(self):
@@ -150,11 +151,12 @@ class TestComputeStats:
         assert stats["accuracy_3plus"] == 100.0
 
     def test_star_breakdown_counts(self):
+        # Each alert gets its own market_id so dedup treats them as independent signals.
         alerts = [
-            _alert(id=1, star_level=5, outcome="correct"),
-            _alert(id=2, star_level=5, outcome="incorrect"),
-            _alert(id=3, star_level=5, outcome="pending"),
-            _alert(id=4, star_level=3, outcome="correct"),
+            _alert(id=1, market_id="m1", star_level=5, outcome="correct"),
+            _alert(id=2, market_id="m2", star_level=5, outcome="incorrect"),
+            _alert(id=3, market_id="m3", star_level=5, outcome="pending"),
+            _alert(id=4, market_id="m4", star_level=3, outcome="correct"),
         ]
         stats = compute_stats(alerts, {})
         star5 = stats["by_star"]["5"]
@@ -197,9 +199,11 @@ class TestComputeStats:
         assert stats["alerts_with_sells"] == 2
 
     def test_filter_distribution_counts(self):
+        # Each alert gets its own market_id so dedup treats them as independent signals.
         alerts = [
             _alert(
                 id=1,
+                market_id="m1",
                 outcome="correct",
                 filters_triggered=[
                     {"filter_id": "B01", "points": 20, "filter_name": "Drip"},
@@ -208,6 +212,7 @@ class TestComputeStats:
             ),
             _alert(
                 id=2,
+                market_id="m2",
                 outcome="incorrect",
                 filters_triggered=[
                     {"filter_id": "B01", "points": 20, "filter_name": "Drip"},
@@ -327,6 +332,9 @@ class TestGenerate:
         table_mock.select.return_value = table_mock
         table_mock.order.return_value = table_mock
         table_mock.limit.return_value = table_mock
+        # Range must chain back to table_mock so .execute() uses the configured side_effect.
+        # fetch_data() uses .range() pagination instead of .limit() to bypass PostgREST cap.
+        table_mock.range.return_value = table_mock
         table_mock.execute.side_effect = [alerts_resp, markets_resp, scans_resp]
 
         db.client.table.return_value = table_mock
@@ -356,6 +364,9 @@ class TestGenerate:
         table_mock.select.return_value = table_mock
         table_mock.order.return_value = table_mock
         table_mock.limit.return_value = table_mock
+        # Range must chain back to table_mock so .execute() uses the configured side_effect.
+        # fetch_data() uses .range() pagination instead of .limit() to bypass PostgREST cap.
+        table_mock.range.return_value = table_mock
         table_mock.execute.side_effect = [alerts_resp, markets_resp, scans_resp]
 
         db.client.table.return_value = table_mock
@@ -368,15 +379,16 @@ class TestGenerate:
 
     def test_filters_work(self):
         """Verify compute_stats filtering/counting produces correct results."""
+        # Each alert gets its own market_id so dedup treats them as independent signals.
         alerts = [
-            _alert(id=1, star_level=5, outcome="correct", actual_return=50.0),
-            _alert(id=2, star_level=5, outcome="correct", actual_return=30.0),
-            _alert(id=3, star_level=5, outcome="incorrect", actual_return=-100.0),
-            _alert(id=4, star_level=3, outcome="correct", actual_return=20.0),
-            _alert(id=5, star_level=3, outcome="incorrect", actual_return=-100.0),
-            _alert(id=6, star_level=3, outcome="incorrect", actual_return=-100.0),
-            _alert(id=7, star_level=1, outcome="pending"),
-            _alert(id=8, star_level=2, outcome="correct", actual_return=10.0),
+            _alert(id=1, market_id="m1", star_level=5, outcome="correct", actual_return=50.0),
+            _alert(id=2, market_id="m2", star_level=5, outcome="correct", actual_return=30.0),
+            _alert(id=3, market_id="m3", star_level=5, outcome="incorrect", actual_return=-100.0),
+            _alert(id=4, market_id="m4", star_level=3, outcome="correct", actual_return=20.0),
+            _alert(id=5, market_id="m5", star_level=3, outcome="incorrect", actual_return=-100.0),
+            _alert(id=6, market_id="m6", star_level=3, outcome="incorrect", actual_return=-100.0),
+            _alert(id=7, market_id="m7", star_level=1, outcome="pending"),
+            _alert(id=8, market_id="m8", star_level=2, outcome="correct", actual_return=10.0),
         ]
         stats = compute_stats(alerts, {})
 
@@ -505,15 +517,17 @@ class TestGroupAlertsByMarket:
         result = group_alerts_by_market(alerts)
         assert len(result) == 2
 
-    def test_resolved_alerts_pass_through_ungrouped(self):
+    def test_resolved_alerts_are_grouped(self):
+        """Resolved alerts with the same (market_id, direction) collapse into one row, same as pending."""
         alerts = [
             self._a(outcome="correct", alert_id=1),
             self._a(outcome="correct", alert_id=2),
         ]
         result = group_alerts_by_market(alerts)
-        # Resolved alerts are never grouped
-        assert len(result) == 2
-        assert all("siblings_count" not in a for a in result)
+        # Both share market_id="m1" + direction="YES" → grouped into 1 primary row
+        assert len(result) == 1
+        assert result[0]["siblings_count"] == 1
+        assert result[0]["siblings_by_star"] == {"3": 1}  # id=2 is 3★
 
     def test_pending_and_resolved_mixed(self):
         alerts = [
