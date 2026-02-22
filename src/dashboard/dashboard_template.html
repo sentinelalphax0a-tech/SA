@@ -201,6 +201,8 @@
         .badge-siblings   { background: rgba(88, 166, 255, 0.12); color: var(--blue); font-size: 0.7rem; }
         .badge-held       { background: rgba(63, 185, 80, 0.15); color: var(--green); }
         .badge-sold-early { background: rgba(210, 153, 34, 0.15); color: var(--yellow); }
+        .badge-stale      { background: rgba(248, 81, 73, 0.15); color: var(--red); font-size: 0.7rem; }
+        .badge-opposite   { background: rgba(188, 140, 255, 0.15); color: var(--purple); font-size: 0.75rem; padding: 0.2rem 0.5rem; border-radius: 4px; display: inline-block; margin-top: 0.4rem; }
 
         .market-question {
             max-width: 300px;
@@ -745,6 +747,12 @@ function renderTable() {
             siblingsHtml = ` <span class="status-badge badge-siblings" title="Mismas wallets detectadas en ${a.siblings_count} scan(s) adicional(es)${tip}">+${a.siblings_count} más${tip ? ': ' + parts : ''}</span>`;
         }
 
+        // Stale badge: pending alert whose market resolution date passed >48h ago
+        let staleHtml = '';
+        if (a.is_stale) {
+            staleHtml = ' <span class="status-badge badge-stale" title="La fecha límite del mercado pasó hace más de 48h — pendiente de resolución en Polymarket">⏰ Stale</span>';
+        }
+
         // Merge badge
         if (a.merge_confirmed) {
             statusHtml += ' <span class="status-badge badge-merge-confirmed" title="Wallet compró YES y NO — posición neta ≈ $0">MERGE CONFIRMED</span>';
@@ -781,7 +789,7 @@ function renderTable() {
         html += `
         <tr class="${rowCls}" onclick="toggleRow(${id})" data-id="${id}">
             <td class="star-cell star-${star}">${starEmoji(star)}${a.has_sells ? ' <span style="color:var(--yellow);font-size:0.75rem">\U0001f534 ' + (a.sold_pct_display || '') + '</span>' : ''}</td>
-            <td class="market-question" title="${(a.market_question || '').replace(/"/g, '&quot;')}">${a.market_question || ''}${siblingsHtml}</td>
+            <td class="market-question" title="${(a.market_question || '').replace(/"/g, '&quot;')}">${a.market_question || ''}${siblingsHtml}${staleHtml}</td>
             <td>${a.direction || ''}</td>
             <td class="col-score">${a.score || 0}</td>
             <td class="col-entry">${formatOdds(a.entry_price)}</td>
@@ -880,6 +888,14 @@ function renderTimeline(a) {
 function renderDetail(a) {
     const wallets = a.wallets || [];
 
+    // Opposite-signal badge (shown in both restricted and full views)
+    let oppHtml = '';
+    if (a.opposite_signal) {
+        const opp = a.opposite_signal;
+        const oppStars = opp.star_level != null ? ` ${'\u2605'.repeat(opp.star_level || 0) || '0\u2605'}` : '';
+        oppHtml = `<div class="badge-opposite" title="Existe una señal en dirección contraria para este mercado">⚡ Señal contraria: ${opp.direction}${oppStars}</div>`;
+    }
+
     // ── Restricted view (no key) ─────────────────────
     if (!HAS_ACCESS) {
         let walletsHtml = '';
@@ -895,6 +911,7 @@ function renderDetail(a) {
         }
 
         return `
+        ${oppHtml}
         <div class="detail-section">
             <h4>Wallets (${wallets.length})</h4>
             ${walletsHtml || '<p class="empty-state">No wallet data</p>'}
@@ -984,6 +1001,7 @@ function renderDetail(a) {
     }
 
     return `
+    ${oppHtml}
     <div class="detail-grid">
         <div class="detail-section">
             <h4>Filters (${filters.length} triggered, ${rawScore} raw x ${mult.toFixed(2)} = ${finalScore})</h4>
@@ -1218,12 +1236,15 @@ function renderResolutionTimeline() {
         const ret = r.actual_return != null
             ? `<span class="timeline-return ${r.actual_return >= 0 ? 'pnl-positive' : 'pnl-negative'}">(${r.actual_return >= 0 ? '+' : ''}${r.actual_return.toFixed(0)}%)</span>`
             : '';
+        const sibBadge = r.siblings_count > 0
+            ? ` <span class="status-badge badge-siblings" title="${r.siblings_count} detección(es) adicional(es) del mismo mercado">+${r.siblings_count} más</span>`
+            : '';
 
         html += `
         <div class="timeline-item ${cls}">
             <div class="timeline-date">${r.date || ''}</div>
             <div class="timeline-text">
-                ${icon} "${r.market_question || ''}" &rarr; ${r.direction || ''} ${r.outcome || ''} ${ret}
+                ${icon} "${r.market_question || ''}" &rarr; ${r.direction || ''} ${r.outcome || ''} ${ret}${sibBadge}
             </div>
         </div>`;
     }

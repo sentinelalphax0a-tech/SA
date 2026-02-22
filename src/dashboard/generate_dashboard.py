@@ -208,6 +208,16 @@ def enrich_alerts(
         if aid:
             sell_by_alert.setdefault(aid, []).append(se)
 
+    # Build (market_id, direction) → max star_level index for opposite-signal detection.
+    # Covers all alerts (pending + resolved) so the badge shows even if the opposite
+    # signal has a different outcome.
+    _mkt_dir_star: dict[tuple, int] = {}
+    for _a in alerts:
+        _k = (_a.get("market_id", ""), (_a.get("direction") or "YES").upper())
+        _star = _a.get("star_level") or 0
+        if _star > _mkt_dir_star.get(_k, -1):
+            _mkt_dir_star[_k] = _star
+
     enriched = []
 
     for alert in alerts:
@@ -314,6 +324,23 @@ def enrich_alerts(
         # Per-alert position closures (merge/position_gone events, not visible in CLOB)
         a["position_closures_history"] = (position_closures or {}).get(a.get("id"), [])
 
+        # Opposite-signal badge: is there a signal in the opposite direction?
+        opp_dir = "NO" if direction == "YES" else "YES"
+        opp_key = (a.get("market_id", ""), opp_dir)
+        opp_star = _mkt_dir_star.get(opp_key)
+        a["opposite_signal"] = (
+            {"direction": opp_dir, "star_level": opp_star}
+            if opp_star is not None
+            else None
+        )
+
+        # Stale badge: pending alert whose market resolution date passed >48h ago.
+        # Uses market_resolution_date (already computed above from markets table).
+        if a.get("outcome") == "pending" and res_date is not None:
+            a["is_stale"] = (now - res_date).total_seconds() > 48 * 3600
+        else:
+            a["is_stale"] = False
+
         enriched.append(a)
 
     return enriched
@@ -336,8 +363,27 @@ def compute_stats(alerts: list[dict], markets: dict) -> dict:
     merge_suspected_count = sum(
         1 for a in alerts if a.get("merge_suspected") and not a.get("merge_confirmed")
     )
+
+    # Deduplicate resolved_list by (market_id, direction): 1 signal per pair.
+    # Takes the highest star_level per group. Used for all accuracy / history
+    # calculations so that multiple scans of the same market count as ONE signal.
+    # Volume metrics (total_alerts, resolved count, by_star["count"]) use the raw list.
+    _dedup_seen: dict[tuple, dict] = {}
+    for _a in resolved_list:
+        _k = (_a.get("market_id", ""), (_a.get("direction") or "YES").upper())
+        if _k not in _dedup_seen or (_a.get("star_level") or 0) > (_dedup_seen[_k].get("star_level") or 0):
+            _dedup_seen[_k] = _a
+    dedup_resolved = list(_dedup_seen.values())
+
+    # Count map: how many raw resolved alerts exist per (market_id, direction).
+    # Used to populate siblings_count in resolution_history.
+    _mid_dir_counts: dict[tuple, int] = {}
+    for _a in resolved_list:
+        _k = (_a.get("market_id", ""), (_a.get("direction") or "YES").upper())
+        _mid_dir_counts[_k] = _mid_dir_counts.get(_k, 0) + 1
+
     # Exclude merge_confirmed from accuracy/P&L — not real trading signals
-    stats_resolved = [a for a in resolved_list if not a.get("merge_confirmed")]
+    stats_resolved = [a for a in dedup_resolved if not a.get("merge_confirmed")]
     correct_3plus = sum(
         1
         for a in stats_resolved
@@ -368,24 +414,21 @@ def compute_stats(alerts: list[dict], markets: dict) -> dict:
         round((correct_sold / len(sold_early_3plus)) * 100, 1) if sold_early_3plus else None
     )
 
-    # By star level
+    # By star level.
+    # count/pending = raw volume (all alerts detected at this star level).
+    # correct/incorrect/accuracy/avg_return = dedup_resolved so each unique
+    # signal is counted once, same as the headline accuracy_3plus.
     by_star = {}
     for star in range(1, 6):
         star_alerts = [a for a in alerts if (a.get("star_level") or 0) == star]
-        star_resolved = [
-            a
-            for a in star_alerts
-            if a.get("outcome") in ("correct", "incorrect")
+        star_pending = sum(1 for a in star_alerts if a.get("outcome") == "pending")
+        # Accuracy stats from deduplicated resolved signals
+        star_stats = [
+            a for a in dedup_resolved
+            if (a.get("star_level") or 0) == star and not a.get("merge_confirmed")
         ]
-        # Exclude merge_confirmed from accuracy/return stats
-        star_stats = [a for a in star_resolved if not a.get("merge_confirmed")]
-        star_correct = sum(
-            1 for a in star_stats if a.get("outcome") == "correct"
-        )
+        star_correct = sum(1 for a in star_stats if a.get("outcome") == "correct")
         star_incorrect = len(star_stats) - star_correct
-        star_pending = sum(
-            1 for a in star_alerts if a.get("outcome") == "pending"
-        )
         denom = star_correct + star_incorrect
         returns = [
             a.get("actual_return")
@@ -517,14 +560,17 @@ def compute_stats(alerts: list[dict], markets: dict) -> dict:
             )
     closing_soon.sort(key=lambda x: x.get("time_left_seconds", 0))
 
-    # Resolution history (last 50)
+    # Resolution history (last 50 unique signals, most recent first).
+    # Uses dedup_resolved so the same market+direction appears at most once.
+    # siblings_count = how many additional raw alerts shared this signal.
     resolution_history = []
     for a in sorted(
-        resolved_list,
+        dedup_resolved,
         key=lambda x: x.get("resolved_at") or x.get("created_at") or "",
         reverse=True,
     )[:50]:
         dt = _parse_dt(a.get("resolved_at"))
+        _k = (a.get("market_id", ""), (a.get("direction") or "YES").upper())
         resolution_history.append(
             {
                 "date": dt.strftime("%d %b %Y") if dt else "",
@@ -533,6 +579,7 @@ def compute_stats(alerts: list[dict], markets: dict) -> dict:
                 "outcome": a.get("outcome"),
                 "actual_return": a.get("actual_return"),
                 "star_level": a.get("star_level"),
+                "siblings_count": _mid_dir_counts.get(_k, 1) - 1,
             }
         )
 
@@ -565,40 +612,21 @@ def compute_stats(alerts: list[dict], markets: dict) -> dict:
 # ── Alert grouping ───────────────────────────────────────────
 
 
-def group_alerts_by_market(alerts: list[dict]) -> list[dict]:
-    """Group alerts by (market_id, direction), one row per pair.
+def _group_by_market_dir(alerts: list[dict]) -> list[dict]:
+    """Group a list of alerts by (market_id, direction), highest star as primary.
 
-    YES and NO signals on the same market are kept separate — they are
-    independent trading signals.
-
-    Within each group:
-      - The alert with the highest star_level (then score) becomes primary.
-      - Remaining alerts are collapsed into primary["siblings"],
-        primary["siblings_count"], and primary["siblings_by_star"]
-        (only stars >= 3 are counted in the badge).
-
-    Non-pending alerts (correct / incorrect) are never grouped — they are
-    passed through as-is to preserve the resolution history view.
+    Shared by both pending and resolved grouping — same sibling logic everywhere.
+    Caller is responsible for the final sort order.
     """
     from collections import defaultdict
 
-    pending: list[dict] = []
-    resolved: list[dict] = []
-    for a in alerts:
-        if a.get("outcome", "pending") == "pending":
-            pending.append(a)
-        else:
-            resolved.append(a)
-
-    # Group pending by (market_id, direction)
     groups: dict[tuple, list[dict]] = defaultdict(list)
-    for a in pending:
+    for a in alerts:
         key = (a.get("market_id", ""), (a.get("direction") or "YES").upper())
         groups[key].append(a)
 
-    grouped_pending: list[dict] = []
+    result: list[dict] = []
     for key, group in groups.items():
-        # Sort: highest star first, then highest score as tiebreak
         group.sort(
             key=lambda x: (x.get("star_level") or 0, x.get("score") or 0),
             reverse=True,
@@ -615,16 +643,46 @@ def group_alerts_by_market(alerts: list[dict]) -> list[dict]:
         primary["siblings_count"] = len(siblings)
         primary["siblings_by_star"] = by_star
         primary["siblings"] = siblings
+        result.append(primary)
 
-        grouped_pending.append(primary)
+    return result
 
-    # Sort grouped pending: highest star first, then most recent
+
+def group_alerts_by_market(alerts: list[dict]) -> list[dict]:
+    """Group alerts by (market_id, direction), one row per pair.
+
+    YES and NO signals on the same market are kept separate — they are
+    independent trading signals.
+
+    Both pending AND resolved alerts are grouped so the table never shows
+    the same signal multiple times regardless of outcome. The alert with
+    the highest star_level (then score) is the primary row; the rest
+    collapse into primary["siblings"], primary["siblings_count"], and
+    primary["siblings_by_star"] (only stars >= 3 are counted in the badge).
+    """
+    pending: list[dict] = []
+    resolved: list[dict] = []
+    for a in alerts:
+        if a.get("outcome", "pending") == "pending":
+            pending.append(a)
+        else:
+            resolved.append(a)
+
+    # Group pending — highest star first, then most recent
+    grouped_pending = _group_by_market_dir(pending)
     grouped_pending.sort(
         key=lambda x: (x.get("star_level") or 0, x.get("created_at") or ""),
         reverse=True,
     )
 
-    return grouped_pending + resolved
+    # Group resolved — most recently resolved first
+    grouped_resolved = _group_by_market_dir(resolved)
+    grouped_resolved.sort(
+        key=lambda x: x.get("resolved_at") or x.get("created_at") or "",
+        reverse=True,
+    )
+
+    return grouped_pending + grouped_resolved
 
 
 # ── HTML generation ──────────────────────────────────────────
