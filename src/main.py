@@ -354,10 +354,18 @@ def _try_consolidate(
 # ── Main scan ────────────────────────────────────────────────
 
 
-def _filter_markets(markets: list[Market], *, mode: str = "quick") -> list[Market]:
+def _filter_markets(
+    markets: list[Market],
+    *,
+    mode: str = "quick",
+    resolved_ids: set[str] | None = None,
+) -> list[Market]:
     """Filter, sort, and cap markets for scanning.
 
     Uses SCAN_PROFILES[mode] for volume, odds, categories, blacklist, and cap.
+    resolved_ids: set of market_ids already marked resolved in our DB.
+        Markets in this set are skipped so the scanner never creates fresh
+        pending alerts for markets we have already closed.
     Default mode="quick" preserves current behavior.
     """
     profile = config.SCAN_PROFILES[mode]
@@ -370,6 +378,9 @@ def _filter_markets(markets: list[Market], *, mode: str = "quick") -> list[Marke
 
     filtered = []
     for m in markets:
+        # Skip markets already resolved in our DB
+        if resolved_ids and m.market_id in resolved_ids:
+            continue
         # Volume filter
         if (m.volume_24h or 0) < min_volume:
             continue
@@ -585,11 +596,19 @@ def run_scan(
         raw_markets = pm_client.get_active_markets(
             categories=profile["categories"],
         )
-        markets = _filter_markets(raw_markets, mode=mode)
+        # Load resolved market_ids from our DB once and pass to filter.
+        # This prevents creating new pending alerts for markets we already closed,
+        # guarding against the window where the Gamma API still shows them as active.
+        try:
+            resolved_ids = db.get_resolved_market_ids()
+        except Exception as _e:
+            logger.warning("Could not load resolved market IDs, proceeding without guard: %s", _e)
+            resolved_ids = set()
+        markets = _filter_markets(raw_markets, mode=mode, resolved_ids=resolved_ids)
         scan.markets_scanned = len(markets)
         logger.info(
-            "Fetched %d markets (%d after filtering), lookback=%dmin",
-            len(raw_markets), len(markets), lookback_minutes,
+            "Fetched %d markets (%d after filtering, %d resolved skipped), lookback=%dmin",
+            len(raw_markets), len(markets), len(resolved_ids), lookback_minutes,
         )
 
         if not markets:

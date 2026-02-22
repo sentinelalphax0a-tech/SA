@@ -27,19 +27,34 @@ class MarketResolver:
         """Execute the full resolution cycle.
 
         Returns dict with counts: {"resolved", "correct", "incorrect"}.
+
+        Architecture:
+        1. get_pending_market_ids() — lightweight paginated query that
+           returns only the market_id column, so the resolver knows which
+           markets to check against the CLOB API even when total pending
+           alerts exceed the PostgREST 1000-row cap.
+        2. For each resolved market, get_pending_alerts_for_market() fetches
+           that market's pending alerts specifically.  A single market never
+           has more than a few dozen pending alerts, so this is always safe
+           without pagination.
+        3. Each alert is resolved individually (outcome/return vary by
+           direction and odds_at_alert, so per-alert logic is required).
+
+        This replaces the old approach of fetching ALL pending alerts in one
+        call and iterating — which was silently capped at 1000 rows and caused
+        2172 alerts (68% of pending) to be invisible to the resolver.
         """
-        # 1. Get pending alerts
-        pending = self.db.get_alerts_pending()
-        if not pending:
+        # 1. Get distinct market_ids that have pending alerts (paginated, lightweight)
+        pending_market_ids = self.db.get_pending_market_ids()
+        if not pending_market_ids:
             logger.info("No pending alerts to resolve")
             return {"resolved": 0, "correct": 0, "incorrect": 0}
 
-        # 2. Extract unique market_ids
-        market_ids = {a["market_id"] for a in pending if a.get("market_id")}
+        logger.info("Found %d distinct markets with pending alerts", len(pending_market_ids))
 
-        # 3. Check resolution for each market
+        # 2. Check resolution for each market via CLOB API
         resolved_markets: dict[str, str] = {}
-        for mid in market_ids:
+        for mid in pending_market_ids:
             try:
                 resolution = self.pm.get_market_resolution(mid)
                 if not resolution:
@@ -59,26 +74,36 @@ class MarketResolver:
 
         if not resolved_markets:
             logger.info("No markets resolved this cycle")
+            return {"resolved": 0, "correct": 0, "incorrect": 0}
 
-        # 4. Resolve matching alerts (API-confirmed only)
+        logger.info("%d markets resolved this cycle", len(resolved_markets))
+
+        # 3. For each resolved market, fetch its pending alerts and resolve them.
+        #    Using a per-market targeted query guarantees ALL pending alerts for
+        #    that market are resolved — not just the ones that happened to land
+        #    within the first 1000 rows of a full-table scan.
         n_correct = 0
         n_incorrect = 0
 
-        for alert in pending:
-            mid = alert.get("market_id")
-            if mid not in resolved_markets:
+        for mid, market_outcome in resolved_markets.items():
+            pending_for_market = self.db.get_pending_alerts_for_market(mid)
+            if not pending_for_market:
                 continue
-
-            try:
-                is_correct = self._resolve_alert(alert, resolved_markets[mid])
-                if is_correct:
-                    n_correct += 1
-                else:
-                    n_incorrect += 1
-            except Exception as e:
-                logger.error(
-                    "Failed to resolve alert #%s: %s", alert.get("id"), e,
-                )
+            logger.debug(
+                "Resolving %d pending alerts for market %s (outcome=%s)",
+                len(pending_for_market), mid[:16], market_outcome,
+            )
+            for alert in pending_for_market:
+                try:
+                    is_correct = self._resolve_alert(alert, market_outcome)
+                    if is_correct:
+                        n_correct += 1
+                    else:
+                        n_incorrect += 1
+                except Exception as e:
+                    logger.error(
+                        "Failed to resolve alert #%s: %s", alert.get("id"), e,
+                    )
 
         n_total = n_correct + n_incorrect
         logger.info(

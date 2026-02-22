@@ -38,13 +38,28 @@ def _pending_alert(**overrides) -> dict:
 
 class TestMarketResolver:
 
+    # ── Helpers for new resolver interface ─────────────────
+    # resolver.run() now uses get_pending_market_ids() to discover which
+    # markets have pending alerts, then get_pending_alerts_for_market(mid)
+    # to fetch the alerts for each resolved market.
+
+    def _setup_single_market(self, db, pm, alerts, resolution):
+        """Wire up mocks for a single-market scenario."""
+        market_ids = {a["market_id"] for a in alerts}
+        db.get_pending_market_ids.return_value = market_ids
+        db.get_pending_alerts_for_market.return_value = alerts
+        pm.get_market_resolution.return_value = resolution
+
+    # ── Resolution outcome tests ─────────────────────────
+
     def test_resolves_correct_yes_alert(self):
         """YES alert + YES outcome → correct."""
         resolver, db, pm = _make_resolver()
-        db.get_alerts_pending.return_value = [
-            _pending_alert(direction="YES", odds_at_alert=0.35),
-        ]
-        pm.get_market_resolution.return_value = {"resolved": True, "outcome": "YES"}
+        self._setup_single_market(
+            db, pm,
+            alerts=[_pending_alert(direction="YES", odds_at_alert=0.35)],
+            resolution={"resolved": True, "outcome": "YES"},
+        )
 
         result = resolver.run()
 
@@ -52,7 +67,6 @@ class TestMarketResolver:
         assert result["incorrect"] == 0
         assert result["resolved"] == 1
 
-        # Check alert was updated with correct outcome
         fields = db.update_alert_fields.call_args[0][1]
         assert fields["outcome"] == "correct"
         assert fields["odds_at_resolution"] == 1.0
@@ -61,10 +75,11 @@ class TestMarketResolver:
     def test_resolves_correct_no_alert(self):
         """NO alert + NO outcome → correct."""
         resolver, db, pm = _make_resolver()
-        db.get_alerts_pending.return_value = [
-            _pending_alert(direction="NO", odds_at_alert=0.70),
-        ]
-        pm.get_market_resolution.return_value = {"resolved": True, "outcome": "NO"}
+        self._setup_single_market(
+            db, pm,
+            alerts=[_pending_alert(direction="NO", odds_at_alert=0.70)],
+            resolution={"resolved": True, "outcome": "NO"},
+        )
 
         result = resolver.run()
 
@@ -78,10 +93,11 @@ class TestMarketResolver:
     def test_resolves_incorrect_alert(self):
         """YES alert + NO outcome → incorrect."""
         resolver, db, pm = _make_resolver()
-        db.get_alerts_pending.return_value = [
-            _pending_alert(direction="YES", odds_at_alert=0.35),
-        ]
-        pm.get_market_resolution.return_value = {"resolved": True, "outcome": "NO"}
+        self._setup_single_market(
+            db, pm,
+            alerts=[_pending_alert(direction="YES", odds_at_alert=0.35)],
+            resolution={"resolved": True, "outcome": "NO"},
+        )
 
         result = resolver.run()
 
@@ -96,7 +112,7 @@ class TestMarketResolver:
     def test_skips_unresolved_market(self):
         """Unresolved market → alert stays pending, no updates."""
         resolver, db, pm = _make_resolver()
-        db.get_alerts_pending.return_value = [_pending_alert()]
+        db.get_pending_market_ids.return_value = {"m1"}
         pm.get_market_resolution.return_value = {"resolved": False}
 
         result = resolver.run()
@@ -104,14 +120,16 @@ class TestMarketResolver:
         assert result["resolved"] == 0
         db.update_alert_fields.assert_not_called()
         db.update_market_resolution.assert_not_called()
+        db.get_pending_alerts_for_market.assert_not_called()
 
     def test_calculates_actual_return_correct_yes(self):
         """Correct YES: actual_return = ((1.0 - 0.35) / 0.35) * 100 = 185.71."""
         resolver, db, pm = _make_resolver()
-        db.get_alerts_pending.return_value = [
-            _pending_alert(direction="YES", odds_at_alert=0.35),
-        ]
-        pm.get_market_resolution.return_value = {"resolved": True, "outcome": "YES"}
+        self._setup_single_market(
+            db, pm,
+            alerts=[_pending_alert(direction="YES", odds_at_alert=0.35)],
+            resolution={"resolved": True, "outcome": "YES"},
+        )
 
         resolver.run()
 
@@ -121,10 +139,11 @@ class TestMarketResolver:
     def test_calculates_actual_return_correct_no(self):
         """Correct NO: odds_adj = 1 - 0.70 = 0.30, return = ((1.0 - 0.30) / 0.30) * 100 = 233.33."""
         resolver, db, pm = _make_resolver()
-        db.get_alerts_pending.return_value = [
-            _pending_alert(direction="NO", odds_at_alert=0.70),
-        ]
-        pm.get_market_resolution.return_value = {"resolved": True, "outcome": "NO"}
+        self._setup_single_market(
+            db, pm,
+            alerts=[_pending_alert(direction="NO", odds_at_alert=0.70)],
+            resolution={"resolved": True, "outcome": "NO"},
+        )
 
         resolver.run()
 
@@ -134,10 +153,11 @@ class TestMarketResolver:
     def test_calculates_actual_return_incorrect(self):
         """Incorrect → actual_return = -100."""
         resolver, db, pm = _make_resolver()
-        db.get_alerts_pending.return_value = [
-            _pending_alert(direction="YES", odds_at_alert=0.35),
-        ]
-        pm.get_market_resolution.return_value = {"resolved": True, "outcome": "NO"}
+        self._setup_single_market(
+            db, pm,
+            alerts=[_pending_alert(direction="YES", odds_at_alert=0.35)],
+            resolution={"resolved": True, "outcome": "NO"},
+        )
 
         resolver.run()
 
@@ -147,19 +167,17 @@ class TestMarketResolver:
     def test_updates_wallet_win_rate(self):
         """Wallet stats updated for each wallet in the alert."""
         resolver, db, pm = _make_resolver()
-        db.get_alerts_pending.return_value = [
-            _pending_alert(
-                wallets=[
-                    {"address": "0xAAA", "total_amount": 5000},
-                    {"address": "0xBBB", "total_amount": 3000},
-                ],
-            ),
-        ]
-        pm.get_market_resolution.return_value = {"resolved": True, "outcome": "YES"}
+        self._setup_single_market(
+            db, pm,
+            alerts=[_pending_alert(wallets=[
+                {"address": "0xAAA", "total_amount": 5000},
+                {"address": "0xBBB", "total_amount": 3000},
+            ])],
+            resolution={"resolved": True, "outcome": "YES"},
+        )
 
         resolver.run()
 
-        # Both wallets should get their stats updated
         assert db.update_wallet_stats.call_count == 2
         db.update_wallet_stats.assert_any_call("0xAAA", won=True)
         db.update_wallet_stats.assert_any_call("0xBBB", won=True)
@@ -167,10 +185,11 @@ class TestMarketResolver:
     def test_updates_wallet_stats_on_loss(self):
         """On incorrect resolution, wallets are updated with won=False."""
         resolver, db, pm = _make_resolver()
-        db.get_alerts_pending.return_value = [
-            _pending_alert(direction="YES"),
-        ]
-        pm.get_market_resolution.return_value = {"resolved": True, "outcome": "NO"}
+        self._setup_single_market(
+            db, pm,
+            alerts=[_pending_alert(direction="YES")],
+            resolution={"resolved": True, "outcome": "NO"},
+        )
 
         resolver.run()
 
@@ -179,8 +198,11 @@ class TestMarketResolver:
     def test_updates_market_resolution(self):
         """Market table is updated with is_resolved=true and outcome."""
         resolver, db, pm = _make_resolver()
-        db.get_alerts_pending.return_value = [_pending_alert(market_id="m1")]
-        pm.get_market_resolution.return_value = {"resolved": True, "outcome": "YES"}
+        self._setup_single_market(
+            db, pm,
+            alerts=[_pending_alert(market_id="m1")],
+            resolution={"resolved": True, "outcome": "YES"},
+        )
 
         resolver.run()
 
@@ -190,13 +212,14 @@ class TestMarketResolver:
         """time_to_resolution_days = (now - alert timestamp).days."""
         resolver, db, pm = _make_resolver()
         created = datetime.now(timezone.utc) - timedelta(days=14)
-        db.get_alerts_pending.return_value = [
-            _pending_alert(
+        self._setup_single_market(
+            db, pm,
+            alerts=[_pending_alert(
                 timestamp=created.isoformat(),
                 created_at=created.isoformat(),
-            ),
-        ]
-        pm.get_market_resolution.return_value = {"resolved": True, "outcome": "YES"}
+            )],
+            resolution={"resolved": True, "outcome": "YES"},
+        )
 
         resolver.run()
 
@@ -204,9 +227,9 @@ class TestMarketResolver:
         assert fields["time_to_resolution_days"] == 14
 
     def test_no_pending_alerts(self):
-        """Empty pending list → returns zeros, no API calls."""
+        """Empty pending market_ids → returns zeros, no API calls."""
         resolver, db, pm = _make_resolver()
-        db.get_alerts_pending.return_value = []
+        db.get_pending_market_ids.return_value = set()
 
         result = resolver.run()
 
@@ -216,7 +239,8 @@ class TestMarketResolver:
     def test_multiple_alerts_same_market(self):
         """Multiple alerts on same market resolved in one API call."""
         resolver, db, pm = _make_resolver()
-        db.get_alerts_pending.return_value = [
+        db.get_pending_market_ids.return_value = {"m1"}
+        db.get_pending_alerts_for_market.return_value = [
             _pending_alert(id=1, market_id="m1", direction="YES"),
             _pending_alert(id=2, market_id="m1", direction="NO"),
         ]
@@ -233,7 +257,8 @@ class TestMarketResolver:
     def test_exception_in_one_alert_doesnt_block_others(self):
         """If resolving one alert throws, the rest still get resolved."""
         resolver, db, pm = _make_resolver()
-        db.get_alerts_pending.return_value = [
+        db.get_pending_market_ids.return_value = {"m1"}
+        db.get_pending_alerts_for_market.return_value = [
             _pending_alert(id=1, market_id="m1"),
             _pending_alert(id=2, market_id="m1"),
         ]
@@ -247,34 +272,42 @@ class TestMarketResolver:
 
         result = resolver.run()
 
-        # One failed, one succeeded
         assert result["correct"] == 1
 
     def test_api_failure_for_market_skips_it(self):
         """API returning None for a market → skip all its alerts."""
         resolver, db, pm = _make_resolver()
-        db.get_alerts_pending.return_value = [
-            _pending_alert(id=1, market_id="m1"),
-            _pending_alert(id=2, market_id="m2"),
-        ]
-        # m1 fails, m2 resolves
-        pm.get_market_resolution.side_effect = [
-            None,
-            {"resolved": True, "outcome": "NO"},
-        ]
+        db.get_pending_market_ids.return_value = {"m1", "m2"}
+
+        # Use side_effect as a dict-lookup so order of set iteration doesn't matter
+        def resolution_side_effect(mid):
+            return {
+                "m1": None,  # API failure → skip
+                "m2": {"resolved": True, "outcome": "NO"},
+            }.get(mid)
+        pm.get_market_resolution.side_effect = resolution_side_effect
+
+        def pending_for_market(mid):
+            return {
+                "m2": [_pending_alert(id=2, market_id="m2", direction="YES")],
+            }.get(mid, [])
+        db.get_pending_alerts_for_market.side_effect = pending_for_market
 
         result = resolver.run()
 
         assert result["resolved"] == 1
         assert result["incorrect"] == 1  # m2 alert was YES, outcome NO
+        # m1's alerts should never be fetched since its API call returned None
+        db.get_pending_alerts_for_market.assert_called_once_with("m2")
 
     def test_no_wallets_in_alert(self):
         """Alert with no wallets → resolves without error."""
         resolver, db, pm = _make_resolver()
-        db.get_alerts_pending.return_value = [
-            _pending_alert(wallets=None),
-        ]
-        pm.get_market_resolution.return_value = {"resolved": True, "outcome": "YES"}
+        self._setup_single_market(
+            db, pm,
+            alerts=[_pending_alert(wallets=None)],
+            resolution={"resolved": True, "outcome": "YES"},
+        )
 
         result = resolver.run()
 

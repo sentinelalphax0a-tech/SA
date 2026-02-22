@@ -260,10 +260,67 @@ class SupabaseClient:
         self.client.table("alerts").update(fields).eq("id", alert_id).execute()
 
     def get_alerts_pending(self) -> list[dict]:
-        """Get all alerts with outcome='pending'."""
+        """Get ALL alerts with outcome='pending'.
+
+        Paginates with .range() to bypass the PostgREST server-side
+        max_rows=1000 cap — same pattern as fetch_data() in the dashboard.
+        """
+        rows: list[dict] = []
+        _PAGE = 1000
+        _offset = 0
+        while True:
+            batch = (
+                self.client.table("alerts")
+                .select("*")
+                .eq("outcome", "pending")
+                .range(_offset, _offset + _PAGE - 1)
+                .execute()
+            ).data or []
+            rows.extend(batch)
+            if len(batch) < _PAGE:
+                break
+            _offset += _PAGE
+        return rows
+
+    def get_pending_market_ids(self) -> set[str]:
+        """Return the set of market_ids that have at least one pending alert.
+
+        Fetches only the market_id column (lightweight) and paginates to
+        handle the full alert table regardless of size.  Used by the resolver
+        to know which markets to query against the CLOB API.
+        """
+        ids: set[str] = set()
+        _PAGE = 1000
+        _offset = 0
+        while True:
+            batch = (
+                self.client.table("alerts")
+                .select("market_id")
+                .eq("outcome", "pending")
+                .range(_offset, _offset + _PAGE - 1)
+                .execute()
+            ).data or []
+            for r in batch:
+                mid = r.get("market_id")
+                if mid:
+                    ids.add(mid)
+            if len(batch) < _PAGE:
+                break
+            _offset += _PAGE
+        return ids
+
+    def get_pending_alerts_for_market(self, market_id: str) -> list[dict]:
+        """Get all pending alerts for a single market_id.
+
+        Each market will never have more than a few dozen pending alerts
+        (single-market bounded), so no pagination is needed here.
+        Used by the resolver to resolve a market's alerts in bulk after
+        confirming resolution via the CLOB API.
+        """
         resp = (
             self.client.table("alerts")
             .select("*")
+            .eq("market_id", market_id)
             .eq("outcome", "pending")
             .execute()
         )
@@ -464,14 +521,26 @@ class SupabaseClient:
         self.client.table("alert_tracking").upsert(data).execute()
 
     def get_pending_alert_trackings(self) -> list[dict]:
-        """Get all alert_tracking rows with outcome='pending'."""
-        resp = (
-            self.client.table("alert_tracking")
-            .select("*")
-            .eq("outcome", "pending")
-            .execute()
-        )
-        return resp.data or []
+        """Get all alert_tracking rows with outcome='pending'.
+
+        Paginates to bypass the PostgREST max_rows=1000 cap.
+        """
+        rows: list[dict] = []
+        _PAGE = 1000
+        _offset = 0
+        while True:
+            batch = (
+                self.client.table("alert_tracking")
+                .select("*")
+                .eq("outcome", "pending")
+                .range(_offset, _offset + _PAGE - 1)
+                .execute()
+            ).data or []
+            rows.extend(batch)
+            if len(batch) < _PAGE:
+                break
+            _offset += _PAGE
+        return rows
 
     def update_alert_tracking_outcome(
         self, alert_id: int, outcome: str, resolved_at: datetime | None = None
@@ -679,15 +748,43 @@ class SupabaseClient:
     # ── Whale Monitor ─────────────────────────────────────
 
     def get_high_star_alerts(self, min_stars: int = 4) -> list[dict]:
-        """Get pending alerts with star_level >= min_stars."""
+        """Get pending alerts with star_level >= min_stars.
+
+        Paginates to bypass the PostgREST max_rows=1000 cap.
+        Currently a small result set but paginated for correctness as the
+        alert table grows.
+        """
+        rows: list[dict] = []
+        _PAGE = 1000
+        _offset = 0
+        while True:
+            batch = (
+                self.client.table("alerts")
+                .select("*")
+                .eq("outcome", "pending")
+                .gte("star_level", min_stars)
+                .range(_offset, _offset + _PAGE - 1)
+                .execute()
+            ).data or []
+            rows.extend(batch)
+            if len(batch) < _PAGE:
+                break
+            _offset += _PAGE
+        return rows
+
+    def get_resolved_market_ids(self) -> set[str]:
+        """Return the set of market_ids already marked resolved in our markets table.
+
+        Used by the scanner to skip markets we've already closed so the
+        scanner never creates fresh pending alerts for resolved markets.
+        """
         resp = (
-            self.client.table("alerts")
-            .select("*")
-            .eq("outcome", "pending")
-            .gte("star_level", min_stars)
+            self.client.table("markets")
+            .select("market_id")
+            .eq("is_resolved", True)
             .execute()
         )
-        return resp.data or []
+        return {r["market_id"] for r in (resp.data or [])}
 
     def get_whale_notifications(self, alert_id: int) -> list[dict]:
         """Get whale notification log entries for an alert."""
