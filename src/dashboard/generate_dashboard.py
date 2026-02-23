@@ -304,17 +304,25 @@ def enrich_alerts(
             a["sold_pct_display"] = None
 
         # exit_label: unified exit status combining total_sold_pct + close_reason.
-        # Priority: non-CLOB close_reason wins over pct-based label.
+        # sell_clob indicates HOW the sell was made (CLOB on-chain), NOT how much.
+        # A whale can sell 40% of their position via CLOB — sell_clob ≠ full exit.
+        # close_reason == "sell_clob" only appears as its own case when total_sold_pct
+        # is 0 (the 11 Group B alerts with no recoverable dollar amount from reconcile).
+        # For sell_clob with total_sold > 0: falls through to Partial/Full Exit by amount.
+        merge_confirmed_flag = a.get("merge_confirmed") or False
         if close_reason == "merge_suspected":
             a["exit_label"] = "\U0001f500 Merge Suspected"
-        elif close_reason == "merge_confirmed":
+        elif close_reason == "merge_confirmed" or merge_confirmed_flag:
             a["exit_label"] = "\U0001f500 Merge Confirmed"
         elif close_reason == "position_gone":
             a["exit_label"] = "\U0001f47b Position Gone"
-        elif total_sold >= 1.0 or close_reason == "sell_clob":
+        elif total_sold >= 1.0:
             a["exit_label"] = "\U0001f4c9 Full Exit"
         elif total_sold > 0:
             a["exit_label"] = f"\U0001f4c9 Partial Exit ({total_sold * 100:.0f}%)"
+        elif close_reason == "sell_clob":
+            # sell_clob confirmed but dollar amount not recoverable (Group B)
+            a["exit_label"] = "\U0001f4c9 Exit (monto desconocido)"
         else:
             a["exit_label"] = None
 
@@ -457,14 +465,19 @@ def compute_stats(alerts: list[dict], markets: dict) -> dict:
     )
 
     # By star level.
-    # count/pending = raw volume (all alerts detected at this star level).
-    # correct/incorrect/accuracy/avg_return = dedup_resolved so each unique
-    # signal is counted once, same as the headline accuracy_3plus.
+    # correct/incorrect = dedup_resolved (same pool as headline accuracy_3plus),
+    # so each unique market is counted once at its best-signal star level.
+    # pending = raw count at that star (pre-resolution, dedup not meaningful yet).
+    # count = correct + incorrect + pending — always sums correctly.
+    # raw_detections = total scan detections at that star (throughput metric, kept
+    #   for reference but NOT used as the "Total" to avoid the c+i+p ≠ total mismatch).
     by_star = {}
     for star in range(1, 6):
-        star_alerts = [a for a in alerts if (a.get("star_level") or 0) == star]
-        star_pending = sum(1 for a in star_alerts if a.get("outcome") == "pending")
-        # Accuracy stats from deduplicated resolved signals
+        star_pending = sum(
+            1 for a in alerts
+            if (a.get("star_level") or 0) == star and a.get("outcome") == "pending"
+        )
+        # Accuracy stats from deduplicated resolved signals (excl. full exits too)
         star_stats = [
             a for a in dedup_resolved
             if (a.get("star_level") or 0) == star and not a.get("merge_confirmed")
@@ -477,8 +490,11 @@ def compute_stats(alerts: list[dict], markets: dict) -> dict:
             for a in star_stats
             if a.get("actual_return") is not None
         ]
+        # raw_detections: scanner throughput (how many times this star fired)
+        raw_detections = sum(1 for a in alerts if (a.get("star_level") or 0) == star)
         by_star[str(star)] = {
-            "count": len(star_alerts),
+            "count": star_correct + star_incorrect + star_pending,  # consistent total
+            "raw_detections": raw_detections,                        # scanner throughput
             "correct": star_correct,
             "incorrect": star_incorrect,
             "pending": star_pending,
