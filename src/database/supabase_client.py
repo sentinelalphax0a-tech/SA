@@ -594,6 +594,7 @@ class SupabaseClient:
         sell_timestamp: datetime,
         hold_duration_hours: float | None = None,
         original_amount: float = 0.0,
+        close_reason: str | None = None,
     ) -> None:
         """Mark a position as sold or partially sold.
 
@@ -614,6 +615,8 @@ class SupabaseClient:
         }
         if hold_duration_hours is not None:
             update_data["hold_duration_hours"] = round(hold_duration_hours, 2)
+        if close_reason is not None:
+            update_data["close_reason"] = close_reason
         self.client.table("wallet_positions").update(update_data).eq(
             "wallet_address", wallet_address
         ).eq("market_id", market_id).execute()

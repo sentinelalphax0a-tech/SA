@@ -402,6 +402,15 @@ class WhaleMonitor:
                 exc_info=True,
             )
 
+        # Write close_reason only if not already set.
+        # check_net_positions() has priority (it sees the full net position);
+        # whale_monitor only writes when the field is still NULL.
+        if not alert.get("close_reason"):
+            try:
+                self.db.update_alert_fields(alert_id, {"close_reason": "sell_clob"})
+            except Exception as e:
+                logger.debug("Failed to write close_reason for alert #%s: %s", alert_id, e)
+
         # Log as SELL_EVENT for cooldown dedup
         try:
             self.db.log_whale_notification(

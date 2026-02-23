@@ -311,8 +311,6 @@ def enrich_alerts(
             a["exit_label"] = "\U0001f500 Merge Confirmed"
         elif close_reason == "position_gone":
             a["exit_label"] = "\U0001f47b Position Gone"
-        elif close_reason == "net_zero":
-            a["exit_label"] = "\u26a0\ufe0f Net Zero"
         elif total_sold >= 1.0 or close_reason == "sell_clob":
             a["exit_label"] = "\U0001f4c9 Full Exit"
         elif total_sold > 0:

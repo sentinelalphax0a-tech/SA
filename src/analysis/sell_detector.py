@@ -16,9 +16,8 @@ Net position formula:
 
 close_reason values (ML labels, not definitive diagnoses):
     'sell_clob'       — explicit CLOB sell detected
-    'merge_suspected' — opposite-direction CLOB trades found
-    'net_zero'        — net position ≈ 0 with sells
-    'position_gone'   — position disappeared without CLOB explanation
+    'merge_suspected' — opposite-direction CLOB trades found (CTF merge proxy)
+    'position_gone'   — position disappeared without any CLOB activity
 """
 
 import logging
@@ -160,6 +159,7 @@ class SellDetector:
                     sell_timestamp=sell_ts,
                     hold_duration_hours=hold_hours,
                     original_amount=pos.get("total_amount", 0.0),
+                    close_reason="sell_clob",
                 )
             except Exception as e:
                 logger.debug("Failed to update position sold: %s", e)
@@ -366,14 +366,34 @@ class SellDetector:
             wallet_addr[:10], market_id[:12], remaining_pct, level, close_reason,
         )
 
-        # Update position in DB
+        # sold_pct as net total (share-based proxy — absolute value, not accumulated).
+        # check_net_positions() always overwrites (authoritative source).
+        sold_pct = round(max(0.0, 1.0 - remaining_pct / 100.0), 4)
+
+        # Update alert: close_reason (authoritative) + total_sold_pct (net total)
+        if pos.get("alert_id"):
+            try:
+                self.db.update_alert_fields(
+                    pos["alert_id"],
+                    {"close_reason": close_reason, "total_sold_pct": sold_pct},
+                )
+            except Exception as e:
+                logger.debug("Failed to update alert sell fields: %s", e)
+
+        # Update wallet_position: mark as sold/partial_sold and record close_reason.
+        # sell_amount is estimated from original_amount * sold_pct (share-based proxy).
         try:
-            self.db.update_alert_fields(
-                pos["alert_id"],
-                {"close_reason": close_reason} if pos.get("alert_id") else {},
+            estimated_sell_amount = original_amount * sold_pct
+            self.db.update_position_sold(
+                wallet_address=wallet_addr,
+                market_id=market_id,
+                sell_amount=estimated_sell_amount,
+                sell_timestamp=now,
+                original_amount=original_amount,
+                close_reason=close_reason,
             )
         except Exception as e:
-            logger.debug("Failed to update close_reason: %s", e)
+            logger.debug("Failed to update wallet position: %s", e)
 
         return {
             "type": event_type,
