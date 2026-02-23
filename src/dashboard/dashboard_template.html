@@ -666,6 +666,7 @@ function renderHeader() {
             <div class="stat-label">Accuracy 3+&#9733;${s.merge_confirmed_count ? `<br><small style="color:var(--star-4)">${s.merge_confirmed_count} merge excl.</small>` : ''}</div>
             ${s.accuracy_3plus_held != null ? `<div style="font-size:0.7rem;color:var(--green);margin-top:0.2rem">Held: ${s.accuracy_3plus_held}%</div>` : ''}
             ${s.accuracy_3plus_sold_early != null ? `<div style="font-size:0.7rem;color:var(--text-secondary);margin-top:0.1rem">Sold early: ${s.accuracy_3plus_sold_early}%</div>` : ''}
+            <div style="font-size:0.65rem;color:var(--text-secondary);margin-top:0.35rem;font-style:italic">Se&#241;al de mayor puntuaci&#243;n por mercado</div>
         </div>
         <div class="stat-card">
             <div class="stat-value stat-red">${s.alerts_with_sells || 0}</div>

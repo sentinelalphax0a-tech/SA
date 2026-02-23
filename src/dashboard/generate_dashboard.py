@@ -382,23 +382,29 @@ def compute_stats(alerts: list[dict], markets: dict) -> dict:
         1 for a in alerts if a.get("merge_suspected") and not a.get("merge_confirmed")
     )
 
-    # Deduplicate resolved_list by (market_id, direction): 1 signal per pair.
-    # Takes the highest star_level per group. Used for all accuracy / history
-    # calculations so that multiple scans of the same market count as ONE signal.
-    # Volume metrics (total_alerts, resolved count, by_star["count"]) use the raw list.
-    _dedup_seen: dict[tuple, dict] = {}
+    # Deduplicate resolved_list by market_id: 1 signal per market (any direction).
+    # The best signal wins via: star_level desc → score desc → fewest negative
+    # filter points → most recent created_at. YES and NO on the same market are
+    # treated as competing signals; only the strongest counts for accuracy.
+    # Volume metrics (total_alerts, resolved count, by_star["count"]) use raw list.
+    def _signal_sort_key(a: dict) -> tuple:
+        filters = a.get("filters_triggered") or []
+        neg_pts = sum(f.get("points", 0) for f in filters if (f.get("points") or 0) < 0)
+        return (a.get("star_level") or 0, a.get("score") or 0, -neg_pts, a.get("created_at") or "")
+
+    _dedup_seen: dict[str, dict] = {}
     for _a in resolved_list:
-        _k = (_a.get("market_id", ""), (_a.get("direction") or "YES").upper())
-        if _k not in _dedup_seen or (_a.get("star_level") or 0) > (_dedup_seen[_k].get("star_level") or 0):
-            _dedup_seen[_k] = _a
+        _mid = _a.get("market_id", "")
+        if _mid not in _dedup_seen or _signal_sort_key(_a) > _signal_sort_key(_dedup_seen[_mid]):
+            _dedup_seen[_mid] = _a
     dedup_resolved = list(_dedup_seen.values())
 
-    # Count map: how many raw resolved alerts exist per (market_id, direction).
+    # Count map: how many raw resolved alerts exist per market_id (all directions).
     # Used to populate siblings_count in resolution_history.
-    _mid_dir_counts: dict[tuple, int] = {}
+    _mid_counts: dict[str, int] = {}
     for _a in resolved_list:
-        _k = (_a.get("market_id", ""), (_a.get("direction") or "YES").upper())
-        _mid_dir_counts[_k] = _mid_dir_counts.get(_k, 0) + 1
+        _mid = _a.get("market_id", "")
+        _mid_counts[_mid] = _mid_counts.get(_mid, 0) + 1
 
     # Exclude merge_confirmed from accuracy/P&L — not real trading signals
     stats_resolved = [a for a in dedup_resolved if not a.get("merge_confirmed")]
@@ -588,7 +594,6 @@ def compute_stats(alerts: list[dict], markets: dict) -> dict:
         reverse=True,
     )[:50]:
         dt = _parse_dt(a.get("resolved_at"))
-        _k = (a.get("market_id", ""), (a.get("direction") or "YES").upper())
         resolution_history.append(
             {
                 "date": dt.strftime("%d %b %Y") if dt else "",
@@ -597,7 +602,7 @@ def compute_stats(alerts: list[dict], markets: dict) -> dict:
                 "outcome": a.get("outcome"),
                 "actual_return": a.get("actual_return"),
                 "star_level": a.get("star_level"),
-                "siblings_count": _mid_dir_counts.get(_k, 1) - 1,
+                "siblings_count": _mid_counts.get(a.get("market_id", ""), 1) - 1,
             }
         )
 
