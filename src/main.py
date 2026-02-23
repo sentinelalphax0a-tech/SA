@@ -47,6 +47,7 @@ from src.publishing.twitter_bot import TwitterBot
 from src.publishing.telegram_bot import TelegramBot
 from src.publishing.formatter import AlertFormatter
 from src.tracking.resolver import MarketResolver
+from src.tracking.alert_tracker import AlertTracker
 
 logging.basicConfig(
     level=logging.INFO,
@@ -532,6 +533,7 @@ def run_scan(
     dry_run: bool = False,
     lookback_override: int | None = None,
     post_scan_check: bool = False,
+    skip_tracker: bool = False,
 ) -> None:
     """Execute a single scan cycle.
 
@@ -610,6 +612,14 @@ def run_scan(
             "Fetched %d markets (%d after filtering, %d resolved skipped), lookback=%dmin",
             len(raw_markets), len(markets), len(resolved_ids), lookback_minutes,
         )
+
+        # Persist market metadata so the resolver can mark them resolved (UPDATE on
+        # an existing row) and so get_resolved_market_ids() returns the correct set
+        # on subsequent scans (Fix 2 scanner guard depends on this table being populated).
+        try:
+            db.upsert_markets_bulk(markets)
+        except Exception as _e:
+            logger.warning("Failed to persist market metadata: %s", _e)
 
         if not markets:
             logger.warning("No active markets found, ending scan")
@@ -950,6 +960,20 @@ def run_scan(
                         _reconcile_sell_totals(db)
                     except Exception as e:
                         logger.error("sell totals reconciliation failed: %s", e)
+
+                    # Update odds_max / odds_min on all pending alerts.
+                    # AlertTracker runs on a 6h schedule but a deep scan should
+                    # always leave odds metrics fresh — especially after resolution.
+                    # Pass --skip-tracker to bypass this if the deep scan is too slow.
+                    if not skip_tracker:
+                        try:
+                            odds_tracker = AlertTracker(db=db, polymarket=pm_client)
+                            tracked_count = odds_tracker.run()
+                            logger.info("Deep scan odds tracker: %d alerts updated", tracked_count)
+                        except Exception as e:
+                            logger.error("Deep scan odds tracker failed: %s", e)
+                    else:
+                        logger.info("Deep scan odds tracker: skipped (--skip-tracker)")
 
             except Exception as e:
                 logger.error("Sell monitoring failed: %s", e)
@@ -1700,10 +1724,18 @@ if __name__ == "__main__":
         help="Run net position check after scan to detect CTF merges, transfers, and burns "
              "(invisible to CLOB API). Adds ~30-60s. Skipped automatically in GitHub Actions.",
     )
+    parser.add_argument(
+        "--skip-tracker",
+        action="store_true",
+        help="Skip AlertTracker (odds_max/odds_min update) at the end of a deep scan. "
+             "Use when the deep scan is already slow and odds tracking can wait for the "
+             "scheduled run_tracker.py cycle.",
+    )
     args = parser.parse_args()
     run_scan(
         mode=args.mode,
         dry_run=args.dry_run,
         lookback_override=args.lookback,
         post_scan_check=args.post_scan_check,
+        skip_tracker=args.skip_tracker,
     )

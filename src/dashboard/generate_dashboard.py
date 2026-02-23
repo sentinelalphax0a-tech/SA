@@ -296,11 +296,29 @@ def enrich_alerts(
 
         # Sell Watch metadata
         total_sold = a.get("total_sold_pct") or 0
+        close_reason = (a.get("close_reason") or "").lower()
         a["has_sells"] = total_sold > 0
         if total_sold > 0:
             a["sold_pct_display"] = f"{total_sold * 100:.0f}% sold"
         else:
             a["sold_pct_display"] = None
+
+        # exit_label: unified exit status combining total_sold_pct + close_reason.
+        # Priority: non-CLOB close_reason wins over pct-based label.
+        if close_reason == "merge_suspected":
+            a["exit_label"] = "\U0001f500 Merge Suspected"
+        elif close_reason == "merge_confirmed":
+            a["exit_label"] = "\U0001f500 Merge Confirmed"
+        elif close_reason == "position_gone":
+            a["exit_label"] = "\U0001f47b Position Gone"
+        elif close_reason == "net_zero":
+            a["exit_label"] = "\u26a0\ufe0f Net Zero"
+        elif total_sold >= 1.0 or close_reason == "sell_clob":
+            a["exit_label"] = "\U0001f4c9 Full Exit"
+        elif total_sold > 0:
+            a["exit_label"] = f"\U0001f4c9 Partial Exit ({total_sold * 100:.0f}%)"
+        else:
+            a["exit_label"] = None
 
         # Hold indicator (resolved alerts only)
         alert_outcome = a.get("outcome", "pending")

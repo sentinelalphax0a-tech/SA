@@ -170,6 +170,13 @@ class SupabaseClient:
         data = _serialize(asdict(market))
         self.client.table("markets").upsert(data).execute()
 
+    def upsert_markets_bulk(self, markets: list) -> None:
+        """Upsert multiple markets in a single request (on_conflict = market_id)."""
+        if not markets:
+            return
+        data = [_serialize(asdict(m)) for m in markets]
+        self.client.table("markets").upsert(data).execute()
+
     def insert_market(self, market: Market) -> None:
         data = _serialize(asdict(market))
         self.client.table("markets").insert(data).execute()

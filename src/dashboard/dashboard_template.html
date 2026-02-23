@@ -972,21 +972,12 @@ function renderDetail(a) {
     const mult = a.multiplier || 1.0;
     const finalScore = a.score || 0;
 
-    // Close reason (set by sell_detector.check_net_positions — non-CLOB exits)
+    // Exit status label (computed in generate_dashboard.py — combines total_sold_pct + close_reason)
     let closeReasonHtml = '';
-    if (a.close_reason) {
-        const crLabels = {
-            'sell_clob':        'Venta CLOB confirmada',
-            'merge_suspected':  'Merge probable (CTF — invisible a CLOB)',
-            'merge_confirmed':  'Merge confirmado (CTF)',
-            'net_zero':         'Posición neta cero (transferencia/quema)',
-            'position_gone':    'Posición desaparecida (sin venta visible)',
-        };
-        const crLabel = crLabels[a.close_reason] || a.close_reason;
+    if (a.exit_label) {
         closeReasonHtml = `
-        <div style="margin-top:0.75rem;padding:0.5rem 0.75rem;background:var(--bg-tertiary);border-radius:4px;font-size:0.82rem">
-            <span style="color:var(--text-secondary)">Cierre detectado:</span>
-            <strong style="margin-left:0.4rem">${crLabel}</strong>
+        <div style="margin-top:0.75rem;padding:0.5rem 0.75rem;background:var(--bg-tertiary);border-radius:4px;font-size:0.85rem;font-weight:600">
+            ${a.exit_label}
         </div>`;
     }
 
