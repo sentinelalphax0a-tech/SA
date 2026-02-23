@@ -404,8 +404,28 @@ def compute_stats(alerts: list[dict], markets: dict) -> dict:
         _mid = _a.get("market_id", "")
         _mid_counts[_mid] = _mid_counts.get(_mid, 0) + 1
 
-    # Exclude merge_confirmed from accuracy/P&L — not real trading signals
-    stats_resolved = [a for a in dedup_resolved if not a.get("merge_confirmed")]
+    # Full exit: 100% sold OR position disappeared without trace.
+    # These are excluded from the main accuracy pool — the market resolution
+    # was never reached, so outcome reflects coincidence not signal quality.
+    def _is_full_exit(a: dict) -> bool:
+        total_sold = a.get("total_sold_pct") or 0
+        cr = (a.get("close_reason") or "").lower()
+        return total_sold >= 1.0 or cr == "position_gone"
+
+    # Exclude merge_confirmed AND full exits from accuracy/P&L
+    stats_resolved = [
+        a for a in dedup_resolved
+        if not a.get("merge_confirmed") and not _is_full_exit(a)
+    ]
+
+    # Full exit pool (3+★, merge_confirmed excluded) — separate stat card
+    full_exits_3plus = [
+        a for a in dedup_resolved
+        if not a.get("merge_confirmed") and _is_full_exit(a)
+        and (a.get("star_level") or 0) >= 3
+    ]
+    full_exit_count = len(full_exits_3plus)
+
     correct_3plus = sum(
         1
         for a in stats_resolved
@@ -585,6 +605,7 @@ def compute_stats(alerts: list[dict], markets: dict) -> dict:
     # Resolution history (last 50 unique signals, most recent first).
     # Uses dedup_resolved so the same market+direction appears at most once.
     # siblings_count = how many additional raw alerts shared this signal.
+    # is_full_exit flag drives the "📉 Full Exit" badge in the feed.
     resolution_history = []
     for a in sorted(
         dedup_resolved,
@@ -601,6 +622,7 @@ def compute_stats(alerts: list[dict], markets: dict) -> dict:
                 "actual_return": a.get("actual_return"),
                 "star_level": a.get("star_level"),
                 "siblings_count": _mid_counts.get(a.get("market_id", ""), 1) - 1,
+                "is_full_exit": not a.get("merge_confirmed") and _is_full_exit(a),
             }
         )
 
@@ -615,6 +637,7 @@ def compute_stats(alerts: list[dict], markets: dict) -> dict:
         "active_alerts": active,
         "resolved_alerts": resolved,
         "accuracy_3plus": accuracy_3plus,
+        "full_exit_count": full_exit_count,
         "alerts_with_sells": alerts_with_sells,
         "merge_confirmed_count": merge_confirmed_count,
         "merge_suspected_count": merge_suspected_count,
