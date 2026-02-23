@@ -1006,6 +1006,7 @@ def run_scan(
         else:
             logger.info("[DRY-RUN] Scan complete — not recording to database")
 
+    chain_client.log_stats()
     _log_scan_summary(scan)
 
 

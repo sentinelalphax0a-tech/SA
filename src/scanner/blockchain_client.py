@@ -5,9 +5,11 @@ Fetches on-chain data: wallet age, funding sources, token transfers.
 """
 
 import logging
+import threading
 import time
 from collections import defaultdict
 from datetime import datetime, timezone
+from typing import Any, Callable
 
 from web3 import Web3
 
@@ -37,12 +39,39 @@ ERC20_BALANCE_ABI = [
     }
 ]
 
-# Rate-limit delay between Alchemy calls (seconds)
+# Rate-limit delay between Alchemy calls (seconds) — used as inter-page buffer
 API_DELAY = 0.10
 # Minimum transfer value to consider (skip dust)
 MIN_TRANSFER_VALUE = 1.0
 # Max pages to fetch per _fetch_transfers call
 MAX_PAGES = 5
+
+# ── Alchemy module-level rate limiter ────────────────────────────────────────
+# Shared across ALL BlockchainClient instances and threads within a process.
+#
+# Design:
+#   • _ALCHEMY_SEMAPHORE(3)  — caps concurrent in-flight HTTP requests to Alchemy
+#   • _ALCHEMY_LOCK + _ALCHEMY_LAST_CALL — token-bucket: ≥200 ms between call starts
+#
+# With these two constraints:
+#   – At most 3 requests are being awaited simultaneously
+#   – A new call can start at most once every 200 ms (≈ 5 starts/s)
+#   – Peak CU/s ≈ 5 × 150 (getAssetTransfers) = 750, well below 500 CU/s sustained
+#     once real network latency is factored in (calls rarely complete in <200 ms)
+_ALCHEMY_MAX_CONCURRENT: int = 3
+_ALCHEMY_SEMAPHORE = threading.Semaphore(_ALCHEMY_MAX_CONCURRENT)
+_ALCHEMY_LOCK = threading.Lock()        # protects _ALCHEMY_LAST_CALL
+_ALCHEMY_LAST_CALL: float = 0.0        # time.monotonic() of the last call start
+_ALCHEMY_MIN_SPACING: float = 0.200    # 200 ms minimum between consecutive starts
+
+# Exponential-backoff delays for 429 retries (seconds): 2 → 4 → 8, then give up
+_BACKOFF_DELAYS: tuple[float, ...] = (2.0, 4.0, 8.0)
+
+
+def _is_rate_limited(exc: Exception) -> bool:
+    """Return True if *exc* signals an HTTP 429 / Alchemy rate-limit response."""
+    msg = str(exc).lower()
+    return "429" in msg or "too many requests" in msg or "rate limit" in msg
 
 
 class BlockchainClient:
@@ -59,7 +88,84 @@ class BlockchainClient:
         self._balance_cache: dict[str, float] = {}
         self._funding_cache: dict[str, list[WalletFunding]] = {}
 
-    # ── Internal helper ─────────────────────────────────────
+        # Per-scan Alchemy call statistics (approximate; GIL makes int += 1 safe
+        # for CPython, but these are best-effort counters for observability)
+        self._calls_ok: int = 0       # requests that returned a result
+        self._rl_hits: int = 0        # 429 responses received (each retry = +1)
+        self._calls_failed: int = 0   # permanent non-429 failures
+
+    # ── Rate limiter ─────────────────────────────────────────────────────────
+
+    def _rate_limited_alchemy(self, fn: Callable[[], Any]) -> Any:
+        """Execute one Alchemy RPC call under the global rate limiter.
+
+        1. Books a time slot (token bucket, 200 ms min spacing) under a brief lock.
+        2. Sleeps outside the lock so other threads can book their own slots.
+        3. Runs *fn* inside the module semaphore (max 3 concurrent in-flight).
+
+        Raises whatever *fn()* raises — retry is the caller's responsibility.
+        """
+        global _ALCHEMY_LAST_CALL
+
+        # Reserve a time slot — lock is held for computation only, not for I/O
+        with _ALCHEMY_LOCK:
+            now = time.monotonic()
+            target = _ALCHEMY_LAST_CALL + _ALCHEMY_MIN_SPACING
+            wait = max(0.0, target - now)
+            _ALCHEMY_LAST_CALL = max(now, target)  # book the slot
+
+        if wait > 0:
+            time.sleep(wait)
+
+        # Limit concurrent in-flight requests
+        with _ALCHEMY_SEMAPHORE:
+            return fn()
+
+    def _alchemy_request(self, fn: Callable[[], Any]) -> Any | None:
+        """Rate-limited Alchemy call with exponential-backoff retry on 429.
+
+        Attempts up to len(_BACKOFF_DELAYS)+1 times total.
+        - 429 responses log [WARNING] (transient throttle, not a bug).
+        - All other errors log [ERROR] (unexpected, needs investigation).
+        Returns None on any final failure so callers can degrade gracefully.
+        """
+        for attempt in range(len(_BACKOFF_DELAYS) + 1):
+            try:
+                result = self._rate_limited_alchemy(fn)
+                self._calls_ok += 1
+                return result
+            except Exception as e:
+                if _is_rate_limited(e):
+                    self._rl_hits += 1
+                    if attempt < len(_BACKOFF_DELAYS):
+                        delay = _BACKOFF_DELAYS[attempt]
+                        logger.warning(
+                            "Alchemy 429 — retry %d/%d in %.0fs",
+                            attempt + 1, len(_BACKOFF_DELAYS), delay,
+                        )
+                        time.sleep(delay)
+                    else:
+                        logger.warning(
+                            "Alchemy 429 — exhausted %d retries, skipping call",
+                            len(_BACKOFF_DELAYS),
+                        )
+                        return None
+                else:
+                    self._calls_failed += 1
+                    logger.error("Alchemy call failed: %s", e)
+                    return None
+        return None  # unreachable; satisfies type checker
+
+    def log_stats(self) -> None:
+        """Log Alchemy RPC call statistics for the completed scan."""
+        total = self._calls_ok + self._rl_hits + self._calls_failed
+        logger.info(
+            "Alchemy stats — %d OK, %d rate-limited (429), %d failed permanently"
+            " (total attempted: %d)",
+            self._calls_ok, self._rl_hits, self._calls_failed, total,
+        )
+
+    # ── Internal helper ──────────────────────────────────────────────────────
 
     def _fetch_transfers(
         self,
@@ -107,13 +213,13 @@ class BlockchainClient:
             if page_key:
                 params["pageKey"] = page_key
 
-            try:
-                resp = self.w3.provider.make_request(
+            resp = self._alchemy_request(
+                lambda: self.w3.provider.make_request(
                     "alchemy_getAssetTransfers", [params]
                 )
-            except Exception as e:
-                logger.error("alchemy_getAssetTransfers failed: %s", e)
-                break
+            )
+            if resp is None:
+                break  # rate-limited or permanently failed — abort page loop
 
             result = resp.get("result") or {}
             transfers = result.get("transfers") or []
@@ -122,11 +228,11 @@ class BlockchainClient:
             page_key = result.get("pageKey")
             if not page_key:
                 break
-            time.sleep(API_DELAY)
+            time.sleep(API_DELAY)  # conservative inter-page buffer
 
         return all_transfers
 
-    # ── Public methods ──────────────────────────────────────
+    # ── Public methods ────────────────────────────────────────────────────────
 
     def get_first_transaction_timestamp(self, address: str) -> datetime | None:
         """Get the timestamp of a wallet's first ever transaction."""
@@ -317,7 +423,11 @@ class BlockchainClient:
                     address=Web3.to_checksum_address(usdc_addr),
                     abi=ERC20_BALANCE_ABI,
                 )
-                raw = contract.functions.balanceOf(checksum).call()
+                raw = self._alchemy_request(
+                    lambda c=contract, a=checksum: c.functions.balanceOf(a).call()
+                )
+                if raw is None:
+                    continue  # skip this token on failure, proceed with partial total
                 total += raw / 1e6  # USDC has 6 decimals
             self._balance_cache[key] = total
             return total
