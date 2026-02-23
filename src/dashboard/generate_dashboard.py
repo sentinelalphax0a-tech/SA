@@ -465,17 +465,27 @@ def compute_stats(alerts: list[dict], markets: dict) -> dict:
     )
 
     # By star level.
-    # correct/incorrect = dedup_resolved (same pool as headline accuracy_3plus),
-    # so each unique market is counted once at its best-signal star level.
-    # pending = raw count at that star (pre-resolution, dedup not meaningful yet).
-    # count = correct + incorrect + pending — always sums correctly.
-    # raw_detections = total scan detections at that star (throughput metric, kept
-    #   for reference but NOT used as the "Total" to avoid the c+i+p ≠ total mismatch).
+    # All three buckets (correct, incorrect, pending) use deduplicated market_ids:
+    # 1 signal per market_id, best signal wins via _signal_sort_key.
+    # count = unique_correct + unique_incorrect + unique_pending → always consistent.
+    # raw_detections = total scan detections at that star (scanner throughput).
+    #
+    # Pending dedup: same sort key as resolved dedup. For pending markets that have
+    # signals at multiple star levels, the star shown here is the highest-star signal
+    # (same winner as the dedup_resolved pool would pick if they resolved today).
+    pending_list = [a for a in alerts if a.get("outcome") == "pending"]
+    _pend_dedup: dict[str, dict] = {}
+    for _a in pending_list:
+        _mid = _a.get("market_id", "")
+        if _mid not in _pend_dedup or _signal_sort_key(_a) > _signal_sort_key(_pend_dedup[_mid]):
+            _pend_dedup[_mid] = _a
+    dedup_pending = list(_pend_dedup.values())
+
     by_star = {}
     for star in range(1, 6):
+        # Unique pending markets whose best signal is at this star level
         star_pending = sum(
-            1 for a in alerts
-            if (a.get("star_level") or 0) == star and a.get("outcome") == "pending"
+            1 for a in dedup_pending if (a.get("star_level") or 0) == star
         )
         # Accuracy stats from deduplicated resolved signals (excl. full exits too)
         star_stats = [
@@ -493,8 +503,8 @@ def compute_stats(alerts: list[dict], markets: dict) -> dict:
         # raw_detections: scanner throughput (how many times this star fired)
         raw_detections = sum(1 for a in alerts if (a.get("star_level") or 0) == star)
         by_star[str(star)] = {
-            "count": star_correct + star_incorrect + star_pending,  # consistent total
-            "raw_detections": raw_detections,                        # scanner throughput
+            "count": star_correct + star_incorrect + star_pending,
+            "raw_detections": raw_detections,
             "correct": star_correct,
             "incorrect": star_incorrect,
             "pending": star_pending,
