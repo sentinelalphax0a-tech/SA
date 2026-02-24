@@ -659,7 +659,7 @@ class BehaviorAnalyzer:
                     total_volume = history.get("total_volume", 0)
                     if total_volume > wallet_balance * config.ALLIN_VOLUME_SUPPRESS_RATIO:
                         logger.info(
-                            "B28 suppressed for %s: PM volume=$%,.0f >> balance=$%,.0f",
+                            "B28 suppressed for %s: PM volume=$%.0f >> balance=$%.0f",
                             accum.wallet_address[:10], total_volume, wallet_balance,
                         )
                         return []

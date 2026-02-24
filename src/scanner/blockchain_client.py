@@ -58,11 +58,11 @@ MAX_PAGES = 5
 #   – A new call can start at most once every 200 ms (≈ 5 starts/s)
 #   – Peak CU/s ≈ 5 × 150 (getAssetTransfers) = 750, well below 500 CU/s sustained
 #     once real network latency is factored in (calls rarely complete in <200 ms)
-_ALCHEMY_MAX_CONCURRENT: int = 1
+_ALCHEMY_MAX_CONCURRENT: int = 5
 _ALCHEMY_SEMAPHORE = threading.Semaphore(_ALCHEMY_MAX_CONCURRENT)
 _ALCHEMY_LOCK = threading.Lock()        # protects _ALCHEMY_LAST_CALL
 _ALCHEMY_LAST_CALL: float = 0.0        # time.monotonic() of the last call start
-_ALCHEMY_MIN_SPACING: float = 0.500    # 500 ms minimum between consecutive starts
+_ALCHEMY_MIN_SPACING: float = 0.100    # 100 ms minimum between consecutive starts
 
 # Exponential-backoff delays for 429 retries (seconds): 2 → 4 → 8, then give up
 _BACKOFF_DELAYS: tuple[float, ...] = (2.0, 4.0, 8.0)
