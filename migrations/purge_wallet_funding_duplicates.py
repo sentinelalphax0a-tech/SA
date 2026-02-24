@@ -10,25 +10,24 @@ Descripción:
   Contexto:
     insert_funding_batch() hacía upsert sin on_conflict → cada
     deep scan re-insertaba todas las relaciones de funding.
-    Resultado: 1.2M filas donde ~58k son registros únicos reales.
-    Factor de duplicación: ~20x.
+    Resultado: 1.2M filas donde el factor de duplicación varía
+    por wallet (algunos wallets tienen 20x, otros 1.1x).
 
-  Este script requiere que idx_wallet_funding_wallet_address
-  exista ANTES de ejecutarse. Sin el índice, get_funding_sources()
-  haría sequential scan de 1.2M filas → timeout.
+  v3 Algoritmo (read-all-first, sin interferencia cursor/delete):
+    1. Leer TODA la tabla en memoria (paginando por id ASC — PK,
+       sin deletes concurrentes durante la lectura).
+    2. En un solo pase cliente, agrupar por
+       (wallet_address, sender_address, hop_level) y conservar
+       el id máximo de cada grupo.
+    3. Eliminar todos los ids duplicados en batches de 500
+       (límite URL de httpx).
 
-  Algoritmo:
-    Por cada wallet en la tabla wallets (3877 wallets):
-      1. get_funding_sources(addr) → rápido con índice (<5ms)
-      2. Agrupar por (sender_address, hop_level) client-side
-      3. Conservar el id máximo de cada grupo
-      4. DELETE WHERE id IN (ids a eliminar)
-    Deletes en batches de 10,000 IDs para evitar timeouts.
+  Ventajas sobre v1/v2:
+    - Cubre TODOS los wallet_address (incluidos intermedios hop-2)
+    - Sin bugs de cursor/flush interaction
+    - Garantizado idempotente: si no hay duplicados, no borra nada
 
-  Snapshot pre-purga: 1,201,122 filas.
-  Resultado esperado: ~50,000-80,000 filas únicas.
-
-Idempotente: sí — segunda ejecución no borra nada (ya no hay duplicados).
+Idempotente: sí — segunda ejecución no borra nada.
 Ejecutar DESPUÉS de: migrations.add_wallet_funding_indexes (fase 1)
 Ejecutar ANTES de:  CREATE UNIQUE INDEX idx_wallet_funding_unique
 Ejecutar: python -m migrations.purge_wallet_funding_duplicates
@@ -48,8 +47,8 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-_DELETE_BATCH_SIZE = 10_000
-_WALLET_PAGE_SIZE = 1_000
+_DELETE_URL_BATCH = 500   # max ids per single DELETE HTTP request (URL length limit)
+_PAGE_SIZE = 1_000
 
 
 def _verify_index_exists(db: SupabaseClient) -> bool:
@@ -70,7 +69,6 @@ def _verify_index_exists(db: SupabaseClient) -> bool:
                 elapsed,
             )
             logger.error("Ejecuta primero: python -m migrations.add_wallet_funding_indexes")
-            logger.error("Y crea los índices de FASE 1 en el SQL Editor.")
             return False
         logger.info(
             "Índice confirmado: get_funding_sources en %.3fs (%d rows para %s…)",
@@ -82,110 +80,123 @@ def _verify_index_exists(db: SupabaseClient) -> bool:
         return False
 
 
-def _get_all_wallet_addresses(db: SupabaseClient) -> list[str]:
-    """Paginate wallets table to get all distinct addresses."""
-    addresses = []
-    offset = 0
+def _read_all_rows(db: SupabaseClient) -> list[dict]:
+    """
+    Read ALL rows from wallet_funding into memory.
+
+    Pages through the table in ascending id order (cursor on PK id).
+    Selects only the 4 fields needed for deduplication.
+    No deletes happen during this read — safe for full accumulation.
+    """
+    all_rows: list[dict] = []
+    last_id: int = 0
+    page_num = 0
+
     while True:
         resp = (
-            db.client.table("wallets")
-            .select("address")
-            .range(offset, offset + _WALLET_PAGE_SIZE - 1)
+            db.client.table("wallet_funding")
+            .select("id,wallet_address,sender_address,hop_level")
+            .gt("id", last_id)
+            .order("id")
+            .limit(_PAGE_SIZE)
             .execute()
         )
-        batch = resp.data or []
-        addresses.extend(r["address"] for r in batch)
-        if len(batch) < _WALLET_PAGE_SIZE:
+        page = resp.data or []
+        page_num += 1
+        if not page:
             break
-        offset += _WALLET_PAGE_SIZE
-    return addresses
+        all_rows.extend(page)
+        last_id = page[-1]["id"]
 
+        if page_num % 100 == 0:
+            logger.info("  [página %d] %d rows leídas...", page_num, len(all_rows))
 
-def _find_duplicate_ids(rows: list[dict]) -> list[int]:
-    """
-    Given all wallet_funding rows for a single wallet, return the IDs
-    to DELETE (all duplicates, keeping the highest id per unique
-    (sender_address, hop_level) pair).
-    """
-    # Group by (sender_address, hop_level) → keep max id
-    best: dict[tuple, int] = {}
-    for row in rows:
-        key = (row["sender_address"], row["hop_level"])
-        row_id = row["id"]
-        if key not in best or row_id > best[key]:
-            best[key] = row_id
-
-    keep_ids = set(best.values())
-    return [row["id"] for row in rows if row["id"] not in keep_ids]
+    logger.info("  Total leído: %d rows en %d páginas", len(all_rows), page_num)
+    return all_rows
 
 
 def _delete_in_batches(db: SupabaseClient, ids: list[int]) -> int:
-    """DELETE wallet_funding rows by id in batches. Returns count deleted."""
+    """DELETE wallet_funding rows by id, splitting into URL-safe chunks."""
     deleted = 0
-    for i in range(0, len(ids), _DELETE_BATCH_SIZE):
-        batch = ids[i : i + _DELETE_BATCH_SIZE]
+    for i in range(0, len(ids), _DELETE_URL_BATCH):
+        batch = ids[i : i + _DELETE_URL_BATCH]
         db.client.table("wallet_funding").delete().in_("id", batch).execute()
         deleted += len(batch)
+        if (i // _DELETE_URL_BATCH) % 20 == 0 and i > 0:
+            logger.info("  ... %d/%d eliminados", deleted, len(ids))
     return deleted
 
 
 def purge(db: SupabaseClient) -> dict:
-    """Run the full deduplication purge. Returns stats dict."""
-    # Pre-flight: verify index exists
+    """
+    Run the full deduplication purge (v3 — read-all-first strategy).
+
+    Reads the entire wallet_funding table into memory first, then identifies
+    all duplicate ids in a single O(n) client-side pass, then deletes them.
+    No concurrent reads/deletes — guaranteed to find all duplicates in one run.
+
+    Returns stats dict.
+    """
     if not _verify_index_exists(db):
         sys.exit(1)
 
-    # Pre-purge count
     pre_resp = db.client.table("wallet_funding").select("*", count="exact").limit(1).execute()
     pre_count = pre_resp.count
     logger.info("")
-    logger.info("=== PURGA DE DUPLICADOS wallet_funding ===")
+    logger.info("=== PURGA DE DUPLICADOS wallet_funding (v3 — read-all-first) ===")
     logger.info("Filas antes: %d", pre_count)
     logger.info("")
 
-    # Get all wallet addresses to process
-    logger.info("Obteniendo lista de wallets...")
-    addresses = _get_all_wallet_addresses(db)
-    logger.info("Wallets a procesar: %d", len(addresses))
-    logger.info("")
-
-    total_deleted = 0
-    total_kept = 0
-    wallets_with_dupes = 0
     t_start = time.time()
 
-    for i, addr in enumerate(addresses, 1):
-        # Fetch all funding rows for this wallet (fast with index)
-        try:
-            rows = db.get_funding_sources(addr)
-        except Exception as e:
-            logger.warning("get_funding_sources falló para %s…: %s", addr[:10], e)
-            continue
+    # Step 1: Read ALL rows into memory (ordered by PK id, no concurrent deletes)
+    logger.info("Paso 1/3: Leyendo tabla completa en memoria...")
+    all_rows = _read_all_rows(db)
+    t_read = time.time() - t_start
+    logger.info("  Completado en %.1fs", t_read)
+    logger.info("")
 
-        if not rows:
-            continue
+    if not all_rows:
+        logger.info("Tabla vacía — nada que purgar.")
+        return {"pre_count": pre_count, "post_count": pre_count, "deleted": 0,
+                "wallets_processed": 0, "wallets_with_dupes": 0}
 
-        # Find duplicates
-        ids_to_delete = _find_duplicate_ids(rows)
-        unique_count = len(rows) - len(ids_to_delete)
-        total_kept += unique_count
+    # Step 2: Find all duplicate ids in one O(n) client-side pass
+    logger.info("Paso 2/3: Identificando duplicados...")
+    best: dict[tuple, int] = {}
+    for row in all_rows:
+        key = (row["wallet_address"], row["sender_address"], row["hop_level"])
+        row_id = row["id"]
+        if key not in best or row_id > best[key]:
+            best[key] = row_id
 
-        if ids_to_delete:
-            wallets_with_dupes += 1
-            deleted = _delete_in_batches(db, ids_to_delete)
-            total_deleted += deleted
+    unique_count = len(best)
+    keep_ids = set(best.values())
+    delete_ids = [row["id"] for row in all_rows if row["id"] not in keep_ids]
+    wallets_processed = len({row["wallet_address"] for row in all_rows})
+    wallets_with_dupes = len({row["wallet_address"] for row in all_rows
+                               if row["id"] not in keep_ids})
 
-        # Progress every 100 wallets
-        if i % 100 == 0 or i == len(addresses):
-            elapsed = time.time() - t_start
-            rate = total_deleted / elapsed if elapsed > 0 else 0
-            logger.info(
-                "  [%d/%d] %d wallets con dupes | %d borradas | %d retenidas | %.0f filas/s",
-                i, len(addresses),
-                wallets_with_dupes, total_deleted, total_kept, rate,
-            )
+    logger.info("  Filas totales:  %d", len(all_rows))
+    logger.info("  Claves únicas:  %d", unique_count)
+    logger.info("  A eliminar:     %d", len(delete_ids))
+    logger.info("  Wallets únicos: %d", wallets_processed)
+    logger.info("  Con dupes:      %d", wallets_with_dupes)
+    logger.info("")
 
-    # Post-purge count
+    if not delete_ids:
+        post_count = pre_count
+        logger.info("Sin duplicados — tabla ya limpia.")
+        logger.info("Filas actuales: %d", post_count)
+        return {"pre_count": pre_count, "post_count": post_count, "deleted": 0,
+                "wallets_processed": wallets_processed, "wallets_with_dupes": 0}
+
+    # Step 3: Delete all duplicates in URL-safe batches
+    logger.info("Paso 3/3: Eliminando %d duplicados en batches de %d...",
+                len(delete_ids), _DELETE_URL_BATCH)
+    total_deleted = _delete_in_batches(db, delete_ids)
+    t_total = time.time() - t_start
+
     post_resp = db.client.table("wallet_funding").select("*", count="exact").limit(1).execute()
     post_count = post_resp.count
 
@@ -194,15 +205,18 @@ def purge(db: SupabaseClient) -> dict:
     logger.info("Filas antes:    %d", pre_count)
     logger.info("Filas después:  %d", post_count)
     logger.info("Filas borradas: %d", pre_count - post_count)
-    logger.info("Reducción:      %.1f%%", (1 - post_count / pre_count) * 100 if pre_count > 0 else 0)
-    logger.info("Tiempo total:   %.1fs", time.time() - t_start)
+    logger.info("Reducción:      %.1f%%",
+                (1 - post_count / pre_count) * 100 if pre_count > 0 else 0)
+    logger.info("Wallets únicos: %d", wallets_processed)
+    logger.info("Con dupes:      %d", wallets_with_dupes)
+    logger.info("Tiempo total:   %.1fs", t_total)
     logger.info("")
 
     return {
         "pre_count": pre_count,
         "post_count": post_count,
         "deleted": pre_count - post_count,
-        "wallets_processed": len(addresses),
+        "wallets_processed": wallets_processed,
         "wallets_with_dupes": wallets_with_dupes,
     }
 
@@ -217,11 +231,12 @@ def verify(db: SupabaseClient, sample_addr: str | None = None) -> None:
     if resp.count > 200_000:
         logger.warning(
             "Quedan %d filas — más de las ~60-80k esperadas. "
-            "Revisa si hay wallets en wallet_funding no registradas en wallets.",
+            "Puede haber wallets con muchos senders únicos.",
             resp.count,
         )
+    else:
+        logger.info("  ✓ Dentro del rango esperado")
 
-    # Spot-check: a real wallet should have data
     if sample_addr:
         rows = db.get_funding_sources(sample_addr)
         logger.info(
@@ -233,7 +248,10 @@ def verify(db: SupabaseClient, sample_addr: str | None = None) -> None:
             if len(keys) == len(rows):
                 logger.info("  ✓ Sin duplicados en este wallet")
             else:
-                logger.warning("  ✗ Aún hay duplicados para este wallet (%d rows, %d keys únicos)", len(rows), len(keys))
+                logger.warning(
+                    "  ✗ Aún hay duplicados (%d rows, %d keys únicos)",
+                    len(rows), len(keys),
+                )
 
 
 def main() -> None:
@@ -244,7 +262,6 @@ def main() -> None:
     db = SupabaseClient()
     stats = purge(db)
 
-    # Spot-check con la primera wallet que tiene datos
     resp = db.client.table("wallet_funding").select("wallet_address").limit(1).execute()
     sample = resp.data[0]["wallet_address"] if resp.data else None
     verify(db, sample_addr=sample)
