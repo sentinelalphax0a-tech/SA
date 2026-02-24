@@ -950,6 +950,7 @@ function renderDetail(a) {
         if (trades.length > 5) tradesHtml += `<div>... +${trades.length - 5} more</div>`;
 
         const polygonscan = `https://polygonscan.com/address/${addr}`;
+        const polymarket = `https://polymarket.com/portfolio/${addr}`;
         walletsHtml += `
         <div class="wallet-card">
             <div class="wallet-addr">${truncAddr(addr)}</div>
@@ -958,7 +959,7 @@ function renderDetail(a) {
             ${tradesHtml ? `<div class="wallet-trades">${tradesHtml}</div>` : ''}
             <div class="wallet-links">
                 <a href="${polygonscan}" target="_blank" rel="noopener">Polygonscan</a>
-                <a href="${a.polymarket_url || '#'}" target="_blank" rel="noopener">Polymarket</a>
+                <a href="${polymarket}" target="_blank" rel="noopener">Polymarket</a>
             </div>
         </div>`;
     }
