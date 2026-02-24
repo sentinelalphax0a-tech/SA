@@ -387,16 +387,22 @@ class SupabaseClient:
         for i in range(0, len(rows), batch_size):
             batch = rows[i : i + batch_size]
             try:
-                self.client.table("wallet_funding").upsert(batch).execute()
+                self.client.table("wallet_funding").upsert(
+                    batch,
+                    on_conflict="wallet_address,sender_address,hop_level",
+                ).execute()
                 inserted += len(batch)
             except Exception as e:
                 logger.warning("Batch funding insert failed (%d rows), falling back: %s", len(batch), e)
                 for row in batch:
                     try:
-                        self.client.table("wallet_funding").insert(row).execute()
+                        self.client.table("wallet_funding").upsert(
+                            row,
+                            on_conflict="wallet_address,sender_address,hop_level",
+                        ).execute()
                         inserted += 1
                     except Exception:
-                        pass  # duplicate or other error
+                        pass  # skip on error
         return inserted
 
     def get_funding_sources(self, wallet_address: str) -> list[dict]:
