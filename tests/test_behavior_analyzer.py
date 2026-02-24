@@ -20,7 +20,7 @@ def _make_trade(
         direction=direction,
         amount=amount,
         price=price,
-        timestamp=datetime.utcnow() - timedelta(hours=hours_ago),
+        timestamp=datetime.now(timezone.utc) - timedelta(hours=hours_ago),
         is_market_order=is_market_order,
     )
 
@@ -96,7 +96,7 @@ class TestAccumulationTiers:
         accum = AccumulationWindow(
             wallet_address="0xabc", market_id="m1", direction="YES",
             total_amount=2500.0, trade_count=3,
-            first_trade=datetime.utcnow(), last_trade=datetime.utcnow(),
+            first_trade=datetime.now(timezone.utc), last_trade=datetime.now(timezone.utc),
         )
         results = analyzer._check_accumulation_tiers(accum, odds_move=None)
         ids = {r.filter_id for r in results}
@@ -111,7 +111,7 @@ class TestAccumulationTiers:
         accum = AccumulationWindow(
             wallet_address="0xabc", market_id="m1", direction="YES",
             total_amount=15000.0, trade_count=10,
-            first_trade=datetime.utcnow(), last_trade=datetime.utcnow(),
+            first_trade=datetime.now(timezone.utc), last_trade=datetime.now(timezone.utc),
         )
         results = analyzer._check_accumulation_tiers(accum, odds_move=0.02)
         ids = {r.filter_id for r in results}
@@ -164,7 +164,7 @@ class TestAntiTripleCounting:
         accum = AccumulationWindow(
             wallet_address="0xabc", market_id="m1", direction="YES",
             total_amount=10000.0, trade_count=1,
-            first_trade=datetime.utcnow(), last_trade=datetime.utcnow(),
+            first_trade=datetime.now(timezone.utc), last_trade=datetime.now(timezone.utc),
         )
         results = analyzer._check_accumulation_tiers(accum, odds_move=None)
         assert len(results) == 0
@@ -175,7 +175,7 @@ class TestAntiTripleCounting:
         accum = AccumulationWindow(
             wallet_address="0xabc", market_id="m1", direction="YES",
             total_amount=34000.0, trade_count=2,
-            first_trade=datetime.utcnow(), last_trade=datetime.utcnow(),
+            first_trade=datetime.now(timezone.utc), last_trade=datetime.now(timezone.utc),
         )
         results = analyzer._check_accumulation_tiers(accum, odds_move=None)
         assert len(results) == 1
@@ -188,7 +188,7 @@ class TestAntiTripleCounting:
         accum = AccumulationWindow(
             wallet_address="0xabc", market_id="m1", direction="YES",
             total_amount=2500.0, trade_count=3,
-            first_trade=datetime.utcnow(), last_trade=datetime.utcnow(),
+            first_trade=datetime.now(timezone.utc), last_trade=datetime.now(timezone.utc),
         )
         results = analyzer._check_accumulation_tiers(accum, odds_move=None)
         b18a = [r for r in results if r.filter_id == "B18a"][0]
@@ -200,7 +200,7 @@ class TestAntiTripleCounting:
         accum = AccumulationWindow(
             wallet_address="0xabc", market_id="m1", direction="YES",
             total_amount=15000.0, trade_count=5,
-            first_trade=datetime.utcnow(), last_trade=datetime.utcnow(),
+            first_trade=datetime.now(timezone.utc), last_trade=datetime.now(timezone.utc),
         )
         results = analyzer._check_accumulation_tiers(accum, odds_move=None)
         b18d = [r for r in results if r.filter_id == "B18d"][0]
@@ -335,7 +335,7 @@ class TestAllIn:
         accum = AccumulationWindow(
             wallet_address="0xabc", market_id="m1", direction="YES",
             total_amount=9500.0, trade_count=3,
-            first_trade=datetime.utcnow(), last_trade=datetime.utcnow(),
+            first_trade=datetime.now(timezone.utc), last_trade=datetime.now(timezone.utc),
         )
         results = analyzer._check_all_in(accum, wallet_balance=10000.0)
         assert len(results) == 1
@@ -348,7 +348,7 @@ class TestAllIn:
         accum = AccumulationWindow(
             wallet_address="0xabc", market_id="m1", direction="YES",
             total_amount=8000.0, trade_count=2,
-            first_trade=datetime.utcnow(), last_trade=datetime.utcnow(),
+            first_trade=datetime.now(timezone.utc), last_trade=datetime.now(timezone.utc),
         )
         results = analyzer._check_all_in(accum, wallet_balance=10000.0)
         assert len(results) == 1
@@ -361,7 +361,7 @@ class TestAllIn:
         accum = AccumulationWindow(
             wallet_address="0xabc", market_id="m1", direction="YES",
             total_amount=1500.0, trade_count=2,
-            first_trade=datetime.utcnow(), last_trade=datetime.utcnow(),
+            first_trade=datetime.now(timezone.utc), last_trade=datetime.now(timezone.utc),
         )
         results = analyzer._check_all_in(accum, wallet_balance=10000.0)
         assert len(results) == 0
@@ -372,7 +372,7 @@ class TestAllIn:
         accum = AccumulationWindow(
             wallet_address="0xabc", market_id="m1", direction="YES",
             total_amount=2000.0, trade_count=3,
-            first_trade=datetime.utcnow(), last_trade=datetime.utcnow(),
+            first_trade=datetime.now(timezone.utc), last_trade=datetime.now(timezone.utc),
         )
         results = analyzer._check_all_in(accum, wallet_balance=2200.0)
         assert len(results) == 0
@@ -383,7 +383,7 @@ class TestAllIn:
         accum = AccumulationWindow(
             wallet_address="0xabc", market_id="m1", direction="YES",
             total_amount=548.0, trade_count=1,
-            first_trade=datetime.utcnow(), last_trade=datetime.utcnow(),
+            first_trade=datetime.now(timezone.utc), last_trade=datetime.now(timezone.utc),
         )
         results = analyzer._check_all_in(accum, wallet_balance=548.0)
         assert len(results) == 0
@@ -394,7 +394,7 @@ class TestAllIn:
         accum = AccumulationWindow(
             wallet_address="0xabc", market_id="m1", direction="YES",
             total_amount=5000.0, trade_count=3,
-            first_trade=datetime.utcnow(), last_trade=datetime.utcnow(),
+            first_trade=datetime.now(timezone.utc), last_trade=datetime.now(timezone.utc),
         )
         results = analyzer._check_all_in(accum, wallet_balance=5200.0)
         assert len(results) == 1

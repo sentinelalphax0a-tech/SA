@@ -7,7 +7,7 @@ Dataclasses matching the Supabase schema for type-safe data handling.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from datetime import datetime, date
+from datetime import datetime, date, timezone
 from typing import Any
 
 
@@ -18,7 +18,7 @@ from typing import Any
 @dataclass
 class Wallet:
     address: str
-    first_seen: datetime = field(default_factory=datetime.utcnow)
+    first_seen: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
     wallet_age_days: int | None = None
     category: str = "unknown"
     total_markets: int = 0
@@ -37,8 +37,8 @@ class Wallet:
     blacklist_reason: str | None = None
     degen_score: int = 0
     notes: str | None = None
-    created_at: datetime = field(default_factory=datetime.utcnow)
-    updated_at: datetime = field(default_factory=datetime.utcnow)
+    created_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
+    updated_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
 
 
 # ============================================================
@@ -60,8 +60,8 @@ class Market:
     outcome: str | None = None
     is_active: bool = True
     opposite_market: str | None = None
-    created_at: datetime = field(default_factory=datetime.utcnow)
-    updated_at: datetime = field(default_factory=datetime.utcnow)
+    created_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
+    updated_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
 
 
 # ============================================================
@@ -74,7 +74,7 @@ class Alert:
     alert_type: str
     score: int
     id: int | None = None
-    timestamp: datetime = field(default_factory=datetime.utcnow)
+    timestamp: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
     market_question: str | None = None
     direction: str | None = None
     score_raw: int | None = None
@@ -114,7 +114,7 @@ class Alert:
     # (those are invisible to the CLOB API by design). Label for ML, not final diagnosis.
     merge_suspected: bool = False
     merge_confirmed: bool = False           # set by check_merge_resolution() when net<$500
-    created_at: datetime = field(default_factory=datetime.utcnow)
+    created_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
 
 
 # ============================================================
@@ -135,7 +135,7 @@ class WalletFunding:
     bridge_name: str | None = None
     is_mixer: bool = False
     mixer_name: str | None = None
-    created_at: datetime = field(default_factory=datetime.utcnow)
+    created_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
 
 
 # ============================================================
@@ -145,7 +145,7 @@ class WalletFunding:
 @dataclass
 class Scan:
     id: int | None = None
-    timestamp: datetime = field(default_factory=datetime.utcnow)
+    timestamp: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
     markets_scanned: int = 0
     transactions_analyzed: int = 0
     wallets_analyzed: int = 0
@@ -178,7 +178,7 @@ class WeeklyReport:
     chart_url: str | None = None
     tweet_id: str | None = None
     telegram_msg_id: str | None = None
-    created_at: datetime = field(default_factory=datetime.utcnow)
+    created_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
 
 
 # ============================================================
@@ -197,7 +197,7 @@ class SmartMoneyLeaderboard:
     avg_entry_odds: float | None = None
     best_trade: dict[str, Any] | None = None
     last_seen: datetime | None = None
-    updated_at: datetime = field(default_factory=datetime.utcnow)
+    updated_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
 
 
 # ============================================================
@@ -208,7 +208,7 @@ class SmartMoneyLeaderboard:
 class SystemConfig:
     key: str
     value: str
-    updated_at: datetime = field(default_factory=datetime.utcnow)
+    updated_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
 
 
 # ============================================================
@@ -270,7 +270,7 @@ class MarketSnapshot:
     volume_24h: float = 0.0
     liquidity: float = 0.0
     id: int | None = None
-    timestamp: datetime = field(default_factory=datetime.utcnow)
+    timestamp: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
 
 
 @dataclass
@@ -299,7 +299,7 @@ class AlertTracking:
     current_odds: float | None = None
     outcome: str = "pending"  # pending | correct | incorrect
     resolved_at: datetime | None = None
-    created_at: datetime = field(default_factory=datetime.utcnow)
+    created_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
 
 
 # ============================================================
@@ -326,8 +326,8 @@ class WalletPosition:
     # hold_duration_hours: hours between alert creation and sell detection.
     # Populated by SellDetector on CLOB sell. Tracking only — no scoring impact.
     hold_duration_hours: float | None = None
-    created_at: datetime = field(default_factory=datetime.utcnow)
-    updated_at: datetime = field(default_factory=datetime.utcnow)
+    created_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
+    updated_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
 
 
 # ============================================================
@@ -348,7 +348,7 @@ class SellEvent:
     position_remaining_pct: float = 0.0
     pnl_pct: float | None = None
     held_hours: float | None = None
-    detected_at: datetime = field(default_factory=datetime.utcnow)
+    detected_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
     sell_timestamp: datetime | None = None
 
 
@@ -366,4 +366,4 @@ class WalletCategory:
     markets_won: int = 0
     specialty_tags: list[str] | None = None
     total_tracked: float = 0.0
-    updated_at: datetime = field(default_factory=datetime.utcnow)
+    updated_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))

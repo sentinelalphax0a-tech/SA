@@ -20,6 +20,20 @@ from src.scanner.blockchain_client import BlockchainClient
 
 logger = logging.getLogger(__name__)
 
+# How long a cached wallet_age_days / is_first_tx_pm stays valid (days).
+# is_first_tx_pm is immutable so could be infinite, but 7d keeps the cache warm
+# while ensuring age estimates stay within ±7 days of reality.
+_WALLET_CACHE_TTL_DAYS = 7
+
+
+def _parse_dt(value: str | datetime) -> datetime:
+    """Return a timezone-aware datetime from a Supabase timestamp string or datetime."""
+    if isinstance(value, datetime):
+        if value.tzinfo is None:
+            return value.replace(tzinfo=timezone.utc)
+        return value
+    return datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+
 
 def _fr(filt: dict, details: str | None = None) -> FilterResult:
     """Build a FilterResult from a config filter dict."""
@@ -64,10 +78,42 @@ class WalletAnalyzer:
             wallet_address: Polygon address to analyze.
             trades: Recent trades made by this wallet.
         """
-        # --- Phase 1: Cheap on-chain checks ---
-        age_days = self.chain.get_wallet_age_days(wallet_address)
-        is_first_pm = self.chain.is_first_tx_polymarket(wallet_address)
-        balance = self.chain.get_balance(wallet_address)
+        # --- Phase 1: DB cache lookup (avoids Alchemy for known wallets) ---
+        # wallet_age_days and is_first_tx_pm are already persisted by upsert_wallet()
+        # at the end of every analyze() call.  Re-reading them here skips the
+        # two most expensive Alchemy calls (3 getAssetTransfers = 450 CU) for
+        # wallets already analysed within the last _WALLET_CACHE_TTL_DAYS days.
+        cached_age: int | None = None          # set iff DB hit + age not NULL
+        cached_first_pm: bool | None = None    # set iff DB hit (immutable flag)
+        try:
+            row = self.db.get_wallet(wallet_address)
+            if row:
+                updated_raw = row.get("updated_at")
+                if updated_raw:
+                    updated_at = _parse_dt(updated_raw)
+                    days_since_update = (datetime.now(timezone.utc) - updated_at).days
+                    if days_since_update < _WALLET_CACHE_TTL_DAYS:
+                        # Age: compensate for elapsed days since last DB write
+                        db_age = row.get("wallet_age_days")
+                        if db_age is not None:
+                            cached_age = int(db_age) + days_since_update
+                        # is_first_tx_pm is immutable — always trust the cached value
+                        cached_first_pm = bool(row.get("is_first_tx_pm", False))
+        except Exception as e:
+            logger.debug("wallet cache lookup failed for %s: %s", wallet_address[:10], e)
+
+        # --- Phase 1: Cheap on-chain checks (skip if cached) ---
+        age_days = (
+            cached_age
+            if cached_age is not None
+            else self.chain.get_wallet_age_days(wallet_address)
+        )
+        is_first_pm = (
+            cached_first_pm
+            if cached_first_pm is not None
+            else self.chain.is_first_tx_polymarket(wallet_address)
+        )
+        balance = self.chain.get_balance(wallet_address)  # always live — balances change
 
         market_ids = {t.market_id for t in trades}
 

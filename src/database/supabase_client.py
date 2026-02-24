@@ -5,7 +5,7 @@ Handles all CRUD operations against the Supabase PostgreSQL backend.
 """
 
 import logging
-from datetime import datetime, date
+from datetime import datetime, date, timezone
 from dataclasses import asdict
 
 from supabase import create_client, Client
@@ -611,7 +611,7 @@ class SupabaseClient:
             "current_status": status,
             "sell_amount": sell_amount,
             "sell_timestamp": sell_timestamp.isoformat(),
-            "updated_at": datetime.utcnow().isoformat(),
+            "updated_at": datetime.now(timezone.utc).isoformat(),
         }
         if hold_duration_hours is not None:
             update_data["hold_duration_hours"] = round(hold_duration_hours, 2)
@@ -917,7 +917,7 @@ class SupabaseClient:
 
     def get_tweets_today_count(self) -> int:
         """Count alerts published to X today (for daily limit)."""
-        today = datetime.utcnow().strftime("%Y-%m-%d")
+        today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
         resp = (
             self.client.table("alerts")
             .select("id", count="exact")
