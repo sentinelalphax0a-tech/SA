@@ -154,6 +154,7 @@ def _build_alert(
     wallet_data: list[dict],
     confluence_type: str | None = None,
     is_whale: bool = False,
+    scan_mode: str = "quick",
 ) -> Alert:
     """Build an Alert object from scoring results."""
     total_amount = sum(w.get("total_amount", 0) for w in wallet_data)
@@ -169,6 +170,21 @@ def _build_alert(
         f.filter_id == "N12" for f in scoring_result.filters_triggered
     )
 
+    # hours_to_deadline: may be negative if resolution date has passed
+    hours_to_deadline: float | None = None
+    if market.resolution_date is not None:
+        try:
+            resolution_date = market.resolution_date
+            if resolution_date.tzinfo is None:
+                resolution_date = resolution_date.replace(tzinfo=timezone.utc)
+            hours_to_deadline = (
+                resolution_date - datetime.now(timezone.utc)
+            ).total_seconds() / 3600
+        except Exception:
+            pass
+
+    filters_as_dicts = [asdict(f) for f in scoring_result.filters_triggered]
+
     return Alert(
         market_id=market.market_id,
         alert_type=alert_type,
@@ -183,8 +199,20 @@ def _build_alert(
         odds_at_alert=market.current_odds,
         confluence_count=len(wallet_data),
         confluence_type=confluence_type,
-        filters_triggered=[asdict(f) for f in scoring_result.filters_triggered],
+        filters_triggered=filters_as_dicts,
         merge_suspected=merge_suspected,
+        # ML snapshot — T0 state, immutable after insert
+        scan_mode=scan_mode,
+        score_initial=scoring_result.score_final,
+        score_raw_initial=scoring_result.score_raw,
+        odds_at_alert_initial=market.current_odds,
+        total_amount_initial=total_amount,
+        filters_triggered_initial=filters_as_dicts,
+        market_category=market.category,
+        market_volume_24h_at_alert=market.volume_24h,
+        market_liquidity_at_alert=market.liquidity,
+        hours_to_deadline=hours_to_deadline,
+        wallets_count_initial=len(wallet_data),
     )
 
 
@@ -436,6 +464,7 @@ async def _process_markets_deep(
     counters,
     chain_client,
     lookback_minutes: int,
+    mode: str = "deep",
 ) -> tuple[list[tuple[Alert, bool]], list[str]]:
     """Process all markets with rate-limited parallelism.
 
@@ -464,6 +493,7 @@ async def _process_markets_deep(
             excluded_senders=set(),
             chain_client=chain_client,
             lookback_minutes=lookback_minutes,
+            mode=mode,
         )
 
     async def process_one(market):
@@ -663,6 +693,7 @@ def run_scan(
                     counters=counters,
                     chain_client=chain_client,
                     lookback_minutes=lookback_minutes,
+                    mode=mode,
                 )
             )
             errors.extend(deep_errors)
@@ -701,6 +732,7 @@ def run_scan(
                         excluded_senders=excluded_senders,
                         chain_client=chain_client,
                         lookback_minutes=lookback_minutes,
+                        mode=mode,
                     )
 
                     # Update sender_market_count with senders seen in this market
@@ -1178,6 +1210,7 @@ def _process_market(
     excluded_senders: set[str] | None = None,
     chain_client: BlockchainClient | None = None,
     lookback_minutes: int | None = None,
+    mode: str = "quick",
 ) -> list[tuple[Alert, bool]]:
     """Process a single market through the full analysis pipeline.
 
@@ -1406,6 +1439,7 @@ def _process_market(
             wallet_data=group_analyzed,
             confluence_type=confluence_type,
             is_whale=is_whale,
+            scan_mode=mode,
         )
         alert.alert_group_id = alert_group_id
         alert_candidates.append((alert, is_whale, scoring_result.score_final))

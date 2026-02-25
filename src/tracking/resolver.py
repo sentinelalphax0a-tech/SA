@@ -64,6 +64,12 @@ class MarketResolver:
                 outcome = resolution.get("outcome")
                 if not outcome:
                     continue
+                if outcome not in ("YES", "NO"):
+                    logger.info(
+                        "Market %s has non-standard outcome '%s' — skipping resolution",
+                        mid, outcome,
+                    )
+                    continue
 
                 resolved_markets[mid] = outcome
 

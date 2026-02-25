@@ -99,6 +99,18 @@ class Alert:
     tweet_id: str | None = None
     telegram_msg_id: str | None = None
     deduplicated: bool = False
+    # ── ML snapshot (T0 state — set once at insert, never updated by dedup) ──
+    scan_mode: str | None = None                              # "quick" or "deep"
+    score_initial: int | None = None                          # score at first detection
+    score_raw_initial: int | None = None                      # raw score at first detection
+    odds_at_alert_initial: float | None = None                # market odds at first detection
+    total_amount_initial: float | None = None                 # total buy amount at first detection
+    filters_triggered_initial: list[dict[str, Any]] | None = None  # filters at first detection
+    market_category: str | None = None                        # market category at first detection
+    market_volume_24h_at_alert: float | None = None           # 24h volume at first detection
+    market_liquidity_at_alert: float | None = None            # liquidity at first detection
+    hours_to_deadline: float | None = None                    # hours until resolution at first detection
+    wallets_count_initial: int | None = None                  # number of wallets at first detection
     outcome: str = "pending"
     resolved_at: datetime | None = None
     total_sold_pct: float = 0.0                  # cumulative % sold across all wallets
