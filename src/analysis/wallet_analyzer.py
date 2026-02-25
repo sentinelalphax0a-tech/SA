@@ -25,6 +25,37 @@ logger = logging.getLogger(__name__)
 # while ensuring age estimates stay within ±7 days of reality.
 _WALLET_CACHE_TTL_DAYS = 7
 
+# How long wallet_funding DB rows are considered fresh for Phase 2.
+# Funding sources rarely change — 14 days balances freshness vs Alchemy savings.
+_FUNDING_CACHE_TTL_DAYS = 14
+
+
+def _db_rows_to_wallet_funding(rows: list[dict]) -> list[WalletFunding]:
+    """Convert wallet_funding DB rows to WalletFunding dataclass objects."""
+    result = []
+    for r in rows:
+        ts = None
+        if r.get("timestamp"):
+            try:
+                ts = _parse_dt(r["timestamp"])
+            except Exception:
+                pass
+        result.append(WalletFunding(
+            wallet_address=r["wallet_address"],
+            sender_address=r["sender_address"],
+            id=r.get("id"),
+            amount=r.get("amount"),
+            timestamp=ts,
+            hop_level=r.get("hop_level", 1),
+            is_exchange=bool(r.get("is_exchange", False)),
+            exchange_name=r.get("exchange_name"),
+            is_bridge=bool(r.get("is_bridge", False)),
+            bridge_name=r.get("bridge_name"),
+            is_mixer=bool(r.get("is_mixer", False)),
+            mixer_name=r.get("mixer_name"),
+        ))
+    return result
+
 
 def _parse_dt(value: str | datetime) -> datetime:
     """Return a timezone-aware datetime from a Supabase timestamp string or datetime."""
@@ -135,15 +166,7 @@ class WalletAnalyzer:
         funding: list[WalletFunding] = []
 
         if basic_score >= self._MIN_BASIC_SCORE_FOR_FUNDING:
-            funding = self.chain.get_funding_sources(
-                wallet_address, max_hops=self.max_hops
-            )
-            if funding:
-                try:
-                    self.db.insert_funding_batch(funding)
-                except Exception as e:
-                    logger.debug("insert_funding_batch failed: %s", e)
-
+            funding = self._get_funding_with_db_cache(wallet_address)
             results.extend(self._check_origin(wallet, funding))
             results.extend(self._check_mixer_funding(funding))
 
@@ -154,6 +177,49 @@ class WalletAnalyzer:
             logger.error("upsert_wallet failed for %s: %s", wallet_address, e)
 
         return results
+
+    # ── Funding cache (DB-first, Alchemy fallback) ─────────
+
+    def _get_funding_with_db_cache(self, wallet_address: str) -> list[WalletFunding]:
+        """Return funding sources for a wallet, using DB cache when fresh.
+
+        Checks wallet_funding DB first. If rows exist and the most recent
+        created_at is within _FUNDING_CACHE_TTL_DAYS (14d), returns those rows
+        as WalletFunding objects without calling Alchemy.
+
+        Falls back to Alchemy (chain.get_funding_sources) on cache miss,
+        stale data, or DB errors. Persists Alchemy results to DB.
+        """
+        try:
+            db_rows = self.db.get_funding_sources(wallet_address)
+            if db_rows:
+                most_recent = max(
+                    (_parse_dt(r["created_at"]) for r in db_rows if r.get("created_at")),
+                    default=None,
+                )
+                if most_recent is not None:
+                    age_days = (datetime.now(timezone.utc) - most_recent).days
+                    if age_days < _FUNDING_CACHE_TTL_DAYS:
+                        logger.info(
+                            "Funding cache HIT for %s (%d rows, age %dd)",
+                            wallet_address[:10], len(db_rows), age_days,
+                        )
+                        return _db_rows_to_wallet_funding(db_rows)
+        except Exception as e:
+            logger.debug("Funding DB cache lookup failed for %s: %s", wallet_address[:10], e)
+
+        # Cache miss or stale — fetch from Alchemy
+        logger.info(
+            "Funding cache MISS for %s — fetching from Alchemy",
+            wallet_address[:10],
+        )
+        funding = self.chain.get_funding_sources(wallet_address, max_hops=self.max_hops)
+        if funding:
+            try:
+                self.db.insert_funding_batch(funding)
+            except Exception as e:
+                logger.debug("insert_funding_batch failed: %s", e)
+        return funding
 
     # ── W01 / W02 / W03 — Wallet age (mutually exclusive) ──
 
