@@ -365,6 +365,39 @@ class SellEvent:
 
 
 # ============================================================
+# BOT TRADES (bot execution tracking)
+# ============================================================
+
+@dataclass
+class BotTrade:
+    """Records a bot order (paper or live) linked to an alert.
+
+    paper_trade=True  → shadow / simulation mode (default, safe)
+    paper_trade=False → live order placed on Polymarket
+
+    Status lifecycle: open → closed_win | closed_loss | cancelled | expired
+    """
+    alert_id: int
+    market_id: str
+    direction: str                # "YES" or "NO"
+    entry_odds: float
+    stake: float
+    paper_trade: bool = True      # always default to shadow mode
+    id: int | None = None
+    status: str = "open"          # open | closed_win | closed_loss | cancelled | expired
+    pnl: float | None = None
+    pnl_pct: float | None = None
+    exit_odds: float | None = None
+    exit_reason: str | None = None  # market_resolved | manual | stop_loss | take_profit
+    polymarket_order_id: str | None = None
+    executed_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
+    closed_at: datetime | None = None
+    notes: str | None = None
+    created_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
+    updated_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
+
+
+# ============================================================
 # WALLET CATEGORY (win rate + specialization tracking)
 # ============================================================
 
