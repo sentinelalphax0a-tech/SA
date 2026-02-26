@@ -17,7 +17,7 @@ Evaluates behavior-level filters:
   B27a-b: Diamond hands — hold without selling (disabled, ENABLE_B27)
   B28a-b: All-in — extreme position ratio (mut. excl. with B23)
   B30a-c: First mover — first to buy in direction (disabled, ENABLE_B30)
-  N09a-b: Obvious bet — with consensus at extreme odds (negative, excl. with B25)
+  N09a-c: Obvious bet — with consensus at elevated odds (negative, excl. with B25)
   N10a-c: Long-horizon discount — market resolution > 30 days (negative)
 """
 
@@ -746,7 +746,7 @@ class BehaviorAnalyzer:
         trades: list[TradeEvent],
         current_odds: float | None,
     ) -> list[FilterResult]:
-        """N09a-b — Wallet bets WITH the consensus at extreme odds.
+        """N09a-c — Wallet bets WITH the consensus at elevated odds.
 
         Opposite of B25 (which rewards contrarian bets). If B25 fired,
         N09 must NOT fire — enforced by caller in analyze().
@@ -755,8 +755,9 @@ class BehaviorAnalyzer:
           YES trade → YES token price
           NO trade  → NO token price
         High price = with consensus = obvious bet.
-          > 0.90 → N09a (extreme obvious, -40)
-          > 0.85 → N09b (obvious, -25)
+          > 0.90 → N09a (extreme obvious, -40, max 2★)
+          > 0.85 → N09b (obvious, -25, max 2★)
+          > 0.80 → N09c (moderate obvious, -20, max 2★)
         """
         if not trades:
             return []
@@ -769,6 +770,8 @@ class BehaviorAnalyzer:
             return [_fr(config.FILTER_N09A, detail)]
         if avg_price > config.OBVIOUS_BET_HIGH:
             return [_fr(config.FILTER_N09B, detail)]
+        if avg_price > config.OBVIOUS_BET_MODERATE:
+            return [_fr(config.FILTER_N09C, detail)]
         return []
 
     # ── N10a-c — Long-horizon discount ──────────────────────

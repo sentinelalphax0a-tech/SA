@@ -218,11 +218,16 @@ def _apply_obvious_bet_cap(
     """Cap star level when N09 (obvious bet) filters are present.
 
     N09a (extreme obvious, price > 0.90) → max 2★
-    N09b (obvious, price > 0.85)         → max 3★
+    N09b (obvious, price > 0.85)         → max 2★
+    N09c (moderate obvious, price > 0.80)→ max 2★
+    All three cap at 2★: betting with the consensus at high token prices
+    is never a strong enough signal to warrant 3★+ publication.
     """
     filter_ids = {f.filter_id for f in filters}
     if "N09a" in filter_ids:
         return min(star_level, config.OBVIOUS_BET_STAR_CAP_EXTREME)
     if "N09b" in filter_ids:
         return min(star_level, config.OBVIOUS_BET_STAR_CAP_HIGH)
+    if "N09c" in filter_ids:
+        return min(star_level, config.OBVIOUS_BET_STAR_CAP_MODERATE)
     return star_level

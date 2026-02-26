@@ -202,9 +202,14 @@ FILTER_N07A = {"id": "N07a", "name": "Scalper leve", "points": -20, "category": 
 FILTER_N07B = {"id": "N07b", "name": "Scalper serial", "points": -40, "category": "negative"}
 # Anti-bot evasion
 FILTER_N08 = {"id": "N08", "name": "Anti-bot evasión", "points": 25, "category": "behavior"}
-# Obvious bet (N09a-b mutually exclusive, opposite of B25)
+# Obvious bet (N09a-c mutually exclusive, opposite of B25)
 FILTER_N09A = {"id": "N09a", "name": "Apuesta obvia extrema", "points": -40, "category": "negative"}
 FILTER_N09B = {"id": "N09b", "name": "Apuesta obvia", "points": -25, "category": "negative"}
+# N09c: token price 0.80-0.85 (odds_at_alert 0.15-0.20 for NO direction).
+# Closes the gap between N09b (>0.85) and uncovered zone (0.80-0.85).
+# Backtested: catches 8 additional failing edge alerts with 0 false negatives on
+# existing star levels. Introduced 2026-02-26 after edge audit.
+FILTER_N09C = {"id": "N09c", "name": "Apuesta obvia moderada", "points": -20, "category": "negative"}
 # Long-horizon discount (N10a-c mutually exclusive)
 FILTER_N10A = {"id": "N10a", "name": "Horizonte lejano", "points": -10, "category": "negative"}
 FILTER_N10B = {"id": "N10b", "name": "Horizonte muy lejano", "points": -20, "category": "negative"}
@@ -240,7 +245,7 @@ ALL_FILTERS: dict[str, dict] = {
         FILTER_N01, FILTER_N02, FILTER_N03, FILTER_N04, FILTER_N05,
         FILTER_N06A, FILTER_N06B, FILTER_N06C,
         FILTER_N07A, FILTER_N07B, FILTER_N08,
-        FILTER_N09A, FILTER_N09B,
+        FILTER_N09A, FILTER_N09B, FILTER_N09C,
         FILTER_N10A, FILTER_N10B, FILTER_N10C,
         FILTER_N12,
     ]
@@ -263,7 +268,7 @@ MUTUALLY_EXCLUSIVE_GROUPS: list[list[str]] = [
     ["M05a", "M05b", "M05c"],   # deadline proximity tiers
     ["N06a", "N06b", "N06c"],    # degen tiers
     ["N07a", "N07b"],            # scalper tiers
-    ["N09a", "N09b"],            # obvious bet tiers
+    ["N09a", "N09b", "N09c"],    # obvious bet tiers
     ["N10a", "N10b", "N10c"],   # long-horizon discount tiers
 ]
 
@@ -414,10 +419,12 @@ DEGEN_MODERATE_MAX: int = 5   # N06b: 3-5
 DEGEN_HEAVY_MIN: int = 6      # N06c: 6+
 
 # Obvious bet thresholds (N09) — opposite of B25
-OBVIOUS_BET_EXTREME: float = 0.90   # N09a: odds > 0.90 in wallet's direction
-OBVIOUS_BET_HIGH: float = 0.85      # N09b: odds > 0.85
+OBVIOUS_BET_EXTREME: float = 0.90    # N09a: token price > 0.90 → -40
+OBVIOUS_BET_HIGH: float = 0.85       # N09b: token price > 0.85 → -25
+OBVIOUS_BET_MODERATE: float = 0.80   # N09c: token price > 0.80 → -20
 OBVIOUS_BET_STAR_CAP_EXTREME: int = 2  # N09a (price > 0.90) → max 2★
-OBVIOUS_BET_STAR_CAP_HIGH: int = 3     # N09b (price > 0.85) → max 3★
+OBVIOUS_BET_STAR_CAP_HIGH: int = 2     # N09b (price > 0.85) → max 2★  [was 3★, lowered 2026-02-26]
+OBVIOUS_BET_STAR_CAP_MODERATE: int = 2  # N09c (price > 0.80) → max 2★
 
 # Long-horizon discount thresholds (N10) — days until resolution
 LONG_HORIZON_EXTREME: int = 90      # N10c: > 90 days → -30
