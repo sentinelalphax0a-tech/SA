@@ -68,6 +68,10 @@ class WhaleMonitor:
                         if event["type"] in ("FULL_EXIT", "PARTIAL_EXIT"):
                             self._process_sell_event(alert, wallet, event)
 
+                        # DCA Watch: persist additional buy metadata
+                        if event["type"] == "ADDITIONAL_BUY":
+                            self._process_additional_buy(alert, wallet, event)
+
                         self._send_whale_update(alert, wallet, event)
                         self._log_notification(
                             alert["id"], event["type"], address, event
@@ -105,9 +109,11 @@ class WhaleMonitor:
         buy_amount = sum(t.amount for t in buy_trades)
 
         last_sell_price = None
+        last_sell_timestamp = None
         if sell_trades:
             last_sell = max(sell_trades, key=lambda t: t.timestamp)
             last_sell_price = last_sell.price
+            last_sell_timestamp = last_sell.timestamp
 
         last_buy_price = None
         if buy_trades:
@@ -121,6 +127,7 @@ class WhaleMonitor:
             "sell_amount": sell_amount,
             "buy_amount": buy_amount,
             "last_sell_price": last_sell_price,
+            "last_sell_timestamp": last_sell_timestamp,
             "last_buy_price": last_buy_price,
             "new_market": new_market,
         }
@@ -190,6 +197,7 @@ class WhaleMonitor:
                 "entry_price": entry_price,
                 "pnl_pct": pnl_pct,
                 "amount_sold": sell_amount,
+                "sell_timestamp": activity.get("last_sell_timestamp"),
             })
 
         # B. Partial exit: sold > 30% but < 90%
@@ -200,6 +208,7 @@ class WhaleMonitor:
                 "remaining": position_amount - sell_amount,
                 "sell_price": activity.get("last_sell_price"),
                 "pct_sold": (sell_amount / position_amount) * 100,
+                "sell_timestamp": activity.get("last_sell_timestamp"),
             })
 
         # C. Additional buy in the same market
@@ -366,6 +375,15 @@ class WhaleMonitor:
         # Calculate held_hours
         held_hours = self._calc_held_hours(alert)
 
+        # Resolve sell_timestamp: real CLOB trade time, fallback to detected_at
+        sell_ts = event.get("sell_timestamp")
+        if sell_ts is None:
+            sell_ts = datetime.now(timezone.utc)
+            logger.warning(
+                "No sell_timestamp from CLOB trades for alert #%s wallet %s — using detected_at",
+                alert_id, address[:10],
+            )
+
         # Build SellEvent
         entry_price = wallet.get(
             "avg_entry_price", alert.get("odds_at_alert")
@@ -381,6 +399,7 @@ class WhaleMonitor:
             position_remaining_pct=max(0.0, 1.0 - sell_pct),
             pnl_pct=event.get("pnl_pct"),
             held_hours=held_hours,
+            sell_timestamp=sell_ts,
         )
 
         # Persist sell event
@@ -431,6 +450,60 @@ class WhaleMonitor:
                 self.telegram.send_message(text, parse_mode="")
             except Exception as e:
                 logger.error("Failed to send sell watch notification: %s", e)
+
+    def _process_additional_buy(
+        self, alert: dict, wallet: dict, event: dict
+    ) -> None:
+        """Persist an additional buy as metadata on the alert.
+
+        Increments additional_buys_count and additional_buys_amount.
+        Also updates total_amount in the wallet JSONB for the buying wallet.
+        Stars and scoring are NEVER modified.
+        """
+        alert_id = alert.get("id")
+        new_amount = event.get("new_amount", 0)
+        if new_amount <= 0:
+            return
+
+        # Increment counters (read from in-memory dict; mutate so subsequent
+        # wallets in the same alert see the updated value within this cycle)
+        current_count = alert.get("additional_buys_count") or 0
+        current_amount = alert.get("additional_buys_amount") or 0.0
+        new_count = current_count + 1
+        new_total_amount = round(current_amount + new_amount, 2)
+
+        fields: dict = {
+            "additional_buys_count": new_count,
+            "additional_buys_amount": new_total_amount,
+        }
+
+        # Update total_amount for this wallet inside the JSONB
+        address = wallet.get("address", "")
+        wallets = alert.get("wallets") or []
+        wallet_found = False
+        updated_wallets = []
+        for w in wallets:
+            if w.get("address") == address:
+                w = dict(w)  # shallow copy — don't mutate the original
+                w["total_amount"] = round((w.get("total_amount") or 0) + new_amount, 2)
+                wallet_found = True
+            updated_wallets.append(w)
+
+        if wallet_found:
+            fields["wallets"] = updated_wallets
+
+        try:
+            self.db.update_alert_fields(alert_id, fields)
+            # Reflect changes back into in-memory alert dict so multiple
+            # wallets in the same alert accumulate correctly within one cycle
+            alert["additional_buys_count"] = new_count
+            alert["additional_buys_amount"] = new_total_amount
+            if wallet_found:
+                alert["wallets"] = updated_wallets
+        except Exception as e:
+            logger.error(
+                "Failed to persist additional buy for alert #%s: %s", alert_id, e
+            )
 
     def _calc_held_hours(self, alert: dict) -> float | None:
         """Calculate hours held from alert creation to now."""

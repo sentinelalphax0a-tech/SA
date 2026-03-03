@@ -199,6 +199,20 @@ class SupabaseClient:
         data.pop("id", None)
         self.client.table("market_snapshots").insert(data).execute()
 
+    def get_last_snapshot_for_market(self, market_id: str) -> dict | None:
+        """Fetch the most recent market_snapshots row for a given market_id."""
+        resp = (
+            self.client.table("market_snapshots")
+            .select("odds, timestamp")
+            .eq("market_id", market_id)
+            .order("timestamp", desc=True)
+            .limit(1)
+            .execute()
+        )
+        if resp.data:
+            return resp.data[0]
+        return None
+
     def get_market_snapshots(
         self, market_id: str, hours: int = 72
     ) -> list[dict]:

@@ -164,19 +164,59 @@ class MarketResolver:
         )
         time_to_resolution = (now - alert_ts).days if alert_ts else None
 
-        # g. Update alert in Supabase
+        # g. Last snapshot: freeze odds_max/odds_min with final pre-resolution price
+        #    and capture odds_at_resolution_raw (raw YES price, non-binary).
+        #    Uses market_snapshots because the CLOB already shows binary odds
+        #    by the time the resolver runs.
+        odds_at_resolution_raw = None
+        peak_updates: dict = {}
+        try:
+            snapshot = self.db.get_last_snapshot_for_market(alert.get("market_id", ""))
+            if snapshot:
+                raw_yes_price = snapshot.get("odds")
+                if raw_yes_price is not None:
+                    odds_at_resolution_raw = raw_yes_price
+                    odds_actual = self._direction_adjust(raw_yes_price, direction)
+
+                    odds_max = alert.get("odds_max")
+                    if odds_max is None or odds_actual > odds_max:
+                        peak_updates["odds_max"] = round(odds_actual, 4)
+                        peak_updates["odds_max_date"] = now.isoformat()
+
+                    odds_min = alert.get("odds_min")
+                    if odds_min is None or odds_actual < odds_min:
+                        peak_updates["odds_min"] = round(odds_actual, 4)
+                        peak_updates["odds_min_date"] = now.isoformat()
+        except Exception as e:
+            logger.warning(
+                "Could not fetch last snapshot for alert #%s: %s", alert_id, e
+            )
+
+        # h. Calculate realized_return: CLOB-weighted PnL for sold portion + market outcome for unsold
+        try:
+            sell_events = self.db.get_sell_events_for_alert(alert_id)
+            total_sold_pct = alert.get("total_sold_pct") or 0.0
+            realized_return = self._calc_realized_return(actual_return, total_sold_pct, sell_events)
+        except Exception as e:
+            logger.warning("Could not calculate realized_return for alert #%s: %s", alert_id, e)
+            realized_return = actual_return
+
+        # i. Update alert in Supabase
         fields: dict = {
             "outcome": alert_outcome,
             "resolved_at": now.isoformat(),
             "odds_at_resolution": odds_at_resolution,
+            "odds_at_resolution_raw": odds_at_resolution_raw,
             "actual_return": actual_return,
+            "realized_return": realized_return,
+            **peak_updates,
         }
         if time_to_resolution is not None:
             fields["time_to_resolution_days"] = time_to_resolution
 
         self.db.update_alert_fields(alert_id, fields)
 
-        # h. Update wallet stats
+        # j. Update wallet stats
         wallets = alert.get("wallets") or []
         for w in wallets:
             addr = w.get("address")
@@ -186,13 +226,52 @@ class MarketResolver:
                 except Exception as e:
                     logger.debug("Failed to update wallet stats for %s: %s", addr, e)
 
-        # i. Log
+        # k. Log
         q_short = (alert.get("market_question") or "")[:40]
         logger.info(
             "Resolved alert #%s: %s | %s", alert_id, alert_outcome, q_short,
         )
 
         return is_correct
+
+    @staticmethod
+    def _calc_realized_return(
+        actual_return: float,
+        total_sold_pct: float,
+        sell_events: list[dict],
+    ) -> float:
+        """Calculate realized return combining CLOB sell PnL with market outcome.
+
+        For the sold portion: weighted average pnl_pct from sell events.
+        For the unsold portion (1 - total_sold_pct): actual_return (market outcome).
+
+        Formula:
+            weighted_pnl_sold = sum(sell_pct_i * pnl_pct_i) / sum(sell_pct_i)
+            realized_return = sold_frac * weighted_pnl_sold + unsold_frac * actual_return
+
+        Falls back to actual_return if no sell events or no pnl_pct data.
+        """
+        if not sell_events or total_sold_pct <= 0:
+            return actual_return
+
+        valid = [
+            (se.get("sell_pct") or 0.0, se["pnl_pct"])
+            for se in sell_events
+            if se.get("pnl_pct") is not None and (se.get("sell_pct") or 0) > 0
+        ]
+        if not valid:
+            return actual_return
+
+        total_wt = sum(sp for sp, _ in valid)
+        if total_wt <= 0:
+            return actual_return
+
+        weighted_pnl_sold = sum(sp * pp for sp, pp in valid) / total_wt
+
+        sold_frac = min(1.0, total_sold_pct)
+        unsold_frac = max(0.0, 1.0 - sold_frac)
+
+        return round(sold_frac * weighted_pnl_sold + unsold_frac * actual_return, 2)
 
     @staticmethod
     def _direction_adjust(odds: float, direction: str) -> float:
