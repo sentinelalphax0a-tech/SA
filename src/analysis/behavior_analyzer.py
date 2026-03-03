@@ -14,9 +14,9 @@ Evaluates behavior-level filters:
   B20: Old wallet, new in Polymarket
   B25a-c: Odds conviction (against consensus, mutually exclusive)
   B26a-b: Stealth accumulation (replaces B18e, mutually exclusive)
-  B27a-b: Diamond hands — hold without selling (disabled, ENABLE_B27)
+  B27a-b: Diamond hands — hold without selling (Option A: scan trades + is_market_order)
   B28a-b: All-in — extreme position ratio (mut. excl. with B23)
-  B30a-c: First mover — first to buy in direction (disabled, ENABLE_B30)
+  B30a-c: First mover — first to buy in direction (24h CLOB lookback, fallback scan)
   N09a-c: Obvious bet — with consensus at elevated odds (negative, excl. with B25)
   N10a-c: Long-horizon discount — market resolution > 30 days (negative)
 """
@@ -529,65 +529,48 @@ class BehaviorAnalyzer:
     ) -> list[FilterResult]:
         """B27a-b — Wallet held position without selling despite favorable odds.
 
-        Requires sell tracking data from wallet_positions table.
-        Disabled by default (ENABLE_B27 = False) until sell_detector
-        covers pre-alert wallets.
-
-        # TODO: Activar cuando sell_detector trackee ventas pre-alerta
+        Option A: uses scan trades only — no wallet_positions DB query.
+          - Primary direction = trades[0].direction.
+          - Sell detection: any trade with is_market_order=False (CLOB side=SELL)
+            in the primary direction means the wallet has partially or fully exited.
+          - Entry time/price = earliest BUY trade in primary direction.
+          - Hold duration limited by scan window; fires reliably in deep-scan mode
+            (24h lookback). B27a (24-48h) candidates visible within that window.
 
         Tiers:
-          B27b: held 72h+, no sells, odds improved >10%  (+20)
-          B27a: held 24-48h, no sells, odds improved >5%  (+15)
+          B27b: held 72h+, odds improved >10%  (+20)
+          B27a: held 24-48h, odds improved >5%  (+15)
         """
         if not config.ENABLE_B27:
             return []
 
-        if not trades or current_odds is None or self.db is None:
+        if not trades or current_odds is None:
             return []
 
-        # Query wallet_positions for sell data
-        try:
-            positions = self.db.get_open_positions(
-                market_id=market_id, wallet_address=wallet_address,
-            )
-        except Exception as e:
-            logger.debug("diamond_hands: get_open_positions failed: %s", e)
+        direction = trades[0].direction
+
+        # Filter to primary direction
+        dir_trades = [t for t in trades if t.direction == direction]
+        if not dir_trades:
             return []
 
-        if not positions:
+        # Any CLOB sell (is_market_order=False ↔ side=SELL) → wallet has exited
+        if any(not t.is_market_order for t in dir_trades):
             return []
 
-        pos = positions[0]
-        # If wallet has sold anything, no diamond hands
-        if pos.get("sell_amount", 0) > 0 or pos.get("sell_timestamp") is not None:
-            return []
+        # Entry = earliest BUY trade in this direction
+        entry = min(dir_trades, key=lambda t: t.timestamp)
+        hold_hours = (datetime.now(timezone.utc) - entry.timestamp).total_seconds() / 3600
 
-        # Calculate hold time
-        entry_odds = pos.get("entry_odds", 0)
-        created_at = pos.get("created_at")
-        if not created_at or not entry_odds:
-            return []
-
-        try:
-            if isinstance(created_at, str):
-                created_dt = ensure_datetime(created_at)
-            else:
-                created_dt = ensure_datetime(created_at)
-        except (TypeError, ValueError):
-            return []
-
-        now = datetime.now(timezone.utc)
-        hold_hours = (now - created_dt).total_seconds() / 3600
-
-        # Calculate odds improvement (direction-adjusted)
-        direction = pos.get("direction", trades[0].direction)
+        # Odds improvement (direction-adjusted):
+        #   YES: token price should rise → improvement = current_odds - entry.price
+        #   NO:  YES price should fall   → improvement = entry.price - current_odds
         if direction == "YES":
-            odds_improvement = current_odds - entry_odds
+            odds_improvement = current_odds - entry.price
         else:
-            # NO position: improvement = entry odds went DOWN (market shifted toward NO)
-            odds_improvement = entry_odds - current_odds
+            odds_improvement = entry.price - current_odds
 
-        # B27b: 72h+ hold, >10% improvement
+        # B27b: 72h+, >10% improvement
         if (hold_hours >= config.DIAMOND_HANDS_LONG_MIN_HOURS
                 and odds_improvement > config.DIAMOND_HANDS_LONG_ODDS_MOVE):
             return [_fr(
@@ -595,7 +578,7 @@ class BehaviorAnalyzer:
                 f"held {hold_hours:.0f}h, odds +{odds_improvement:.2f}",
             )]
 
-        # B27a: 24-48h hold, >5% improvement
+        # B27a: 24-48h, >5% improvement
         if (config.DIAMOND_HANDS_SHORT_MIN_HOURS <= hold_hours
                 <= config.DIAMOND_HANDS_SHORT_MAX_HOURS
                 and odds_improvement > config.DIAMOND_HANDS_SHORT_ODDS_MOVE):
@@ -679,10 +662,9 @@ class BehaviorAnalyzer:
     ) -> list[FilterResult]:
         """B30a-c — Wallet was among the first to buy in this direction.
 
-        Disabled by default (ENABLE_B30 = False) — current data only
-        covers a 35-minute scan window, not full 24h history.
-
-        # TODO: Activar cuando exista tabla trades históricos en Supabase
+        Uses 24h lookback via CLOB Data API when pm_client is available.
+        Falls back to all_trades (scan window) if the API call fails or
+        pm_client is None.
 
         Tiers:
           B30a: first wallet to buy >$1K in direction  (+20)
@@ -692,20 +674,32 @@ class BehaviorAnalyzer:
         if not config.ENABLE_B30:
             return []
 
-        if not trades or not all_trades:
+        if not trades:
             return []
 
         direction = trades[0].direction
         wallet_addr_lower = wallet_address.lower()
 
-        # Get this wallet's earliest trade in the market
-        earliest = min(trades, key=lambda t: t.timestamp)
+        # ── Try 24h CLOB fetch; fall back to scan window ──────────────────────
+        reference_trades: list[TradeEvent] | None = all_trades
+        if self.pm_client is not None:
+            try:
+                reference_trades = self.pm_client.get_recent_trades(
+                    market_id=market_id,
+                    minutes=config.FIRST_MOVER_LOOKBACK_HOURS * 60,
+                    min_amount=config.FIRST_MOVER_MIN_AMOUNT,
+                )
+            except Exception as e:
+                logger.debug("B30: 24h CLOB fetch failed, using scan window: %s", e)
+                reference_trades = all_trades
 
-        # Collect all trades in same market + direction with amount >= $1K,
-        # ordered chronologically
+        if not reference_trades:
+            return []
+
+        # Collect trades in same direction with amount >= $1K, chronological
         same_dir_trades = sorted(
             [
-                t for t in all_trades
+                t for t in reference_trades
                 if t.market_id == market_id
                 and t.direction == direction
                 and t.amount >= config.FIRST_MOVER_MIN_AMOUNT
@@ -716,7 +710,7 @@ class BehaviorAnalyzer:
         if not same_dir_trades:
             return []
 
-        # Determine unique wallets in chronological order of first appearance
+        # Unique wallets in chronological order of first appearance
         seen: set[str] = set()
         ordered_wallets: list[str] = []
         for t in same_dir_trades:

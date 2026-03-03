@@ -340,8 +340,8 @@ STEALTH_WHALE_MIN: float = 5000.0       # B26a: total > $5k
 STEALTH_LOW_IMPACT_MOVE: float = 0.03   # B26b: price_move < 3%
 STEALTH_LOW_IMPACT_MIN: float = 3000.0  # B26b: total > $3k
 
-# Diamond hands (B27) — disabled until sell_detector covers pre-alert wallets
-ENABLE_B27: bool = False
+# Diamond hands (B27) — Option A: sell detection via is_market_order (CLOB side field)
+ENABLE_B27: bool = True
 DIAMOND_HANDS_SHORT_MIN_HOURS: int = 24   # B27a: held 24-48h
 DIAMOND_HANDS_SHORT_MAX_HOURS: int = 48
 DIAMOND_HANDS_SHORT_ODDS_MOVE: float = 0.05  # B27a: odds improved >5%
@@ -353,8 +353,8 @@ ALLIN_EXTREME_MIN: float = 0.90   # B28a: >90% of balance
 ALLIN_STRONG_MIN: float = 0.70    # B28b: 70-90% of balance
 ALLIN_MIN_AMOUNT: float = 3500.0  # B28: min $3.5K (below = pocket money, not insider)
 
-# First mover (B30) — disabled until trades history table exists in Supabase
-ENABLE_B30: bool = False
+# First mover (B30) — 24h CLOB Data API lookback; fallback to scan window
+ENABLE_B30: bool = True
 FIRST_MOVER_MIN_AMOUNT: float = 1000.0  # minimum $1K to count
 FIRST_MOVER_LOOKBACK_HOURS: int = 24    # look back 24h for prior buyers
 

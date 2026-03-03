@@ -13,9 +13,10 @@ def _make_trade(
     hours_ago: int = 0,
     is_market_order: bool = True,
     direction: str = "YES",
+    wallet_address: str = "0xabc",
 ) -> TradeEvent:
     return TradeEvent(
-        wallet_address="0xabc",
+        wallet_address=wallet_address,
         market_id="market1",
         direction=direction,
         amount=amount,
@@ -432,32 +433,140 @@ class TestAllIn:
         assert "B23b" in ids
 
 
-# ── B27 — Diamond hands disabled test ────────────────────
+# ── B27 — Diamond hands ───────────────────────────────────
 
 
 class TestDiamondHands:
-    def test_b27_disabled(self):
-        """With ENABLE_B27=False, filter produces no results."""
+    def test_b27a_fires_yes(self):
+        """36h hold, YES, entry=0.30, current=0.37 (+7% > 5%) → B27a."""
         analyzer = BehaviorAnalyzer()
-        trades = [_make_trade(amount=5000, hours_ago=72)]
-        results = analyzer._check_diamond_hands(
-            "0xabc", "market1", trades, current_odds=0.60,
-        )
+        trades = [_make_trade(price=0.30, hours_ago=36, amount=5000)]
+        results = analyzer._check_diamond_hands("0xabc", "market1", trades, current_odds=0.37)
+        assert len(results) == 1
+        assert results[0].filter_id == "B27a"
+
+    def test_b27b_fires_yes(self):
+        """80h hold, YES, entry=0.30, current=0.45 (+15% > 10%) → B27b."""
+        analyzer = BehaviorAnalyzer()
+        trades = [_make_trade(price=0.30, hours_ago=80, amount=5000)]
+        results = analyzer._check_diamond_hands("0xabc", "market1", trades, current_odds=0.45)
+        assert len(results) == 1
+        assert results[0].filter_id == "B27b"
+
+    def test_b27b_fires_no_direction(self):
+        """80h hold, NO, entry price=0.70, current YES=0.55 → improvement=0.15 > 10% → B27b."""
+        analyzer = BehaviorAnalyzer()
+        trades = [_make_trade(price=0.70, hours_ago=80, amount=5000, direction="NO")]
+        results = analyzer._check_diamond_hands("0xabc", "market1", trades, current_odds=0.55)
+        assert len(results) == 1
+        assert results[0].filter_id == "B27b"
+
+    def test_b27_no_fire_insufficient_improvement(self):
+        """36h hold, YES, only +3% improvement (< 5% threshold) → no result."""
+        analyzer = BehaviorAnalyzer()
+        trades = [_make_trade(price=0.30, hours_ago=36, amount=5000)]
+        results = analyzer._check_diamond_hands("0xabc", "market1", trades, current_odds=0.33)
+        assert len(results) == 0
+
+    def test_b27_no_fire_recent_trade(self):
+        """Trade from 1h ago — hold time below 24h minimum → no result."""
+        analyzer = BehaviorAnalyzer()
+        trades = [_make_trade(price=0.30, hours_ago=1, amount=5000)]
+        results = analyzer._check_diamond_hands("0xabc", "market1", trades, current_odds=0.50)
+        assert len(results) == 0
+
+    def test_b27_sell_detected_suppresses(self):
+        """Buy 36h ago + CLOB sell (is_market_order=False) detected → no diamond hands."""
+        analyzer = BehaviorAnalyzer()
+        trades = [
+            _make_trade(price=0.30, hours_ago=36, amount=5000, is_market_order=True),
+            _make_trade(price=0.40, hours_ago=1,  amount=2000, is_market_order=False),
+        ]
+        results = analyzer._check_diamond_hands("0xabc", "market1", trades, current_odds=0.45)
+        assert len(results) == 0
+
+    def test_b27_no_current_odds(self):
+        """current_odds=None → no result."""
+        analyzer = BehaviorAnalyzer()
+        trades = [_make_trade(price=0.30, hours_ago=80, amount=5000)]
+        results = analyzer._check_diamond_hands("0xabc", "market1", trades, current_odds=None)
         assert len(results) == 0
 
 
-# ── B30 — First mover disabled test ──────────────────────
+# ── B30 — First mover ────────────────────────────────────
 
 
 class TestFirstMover:
-    def test_b30_disabled(self):
-        """With ENABLE_B30=False, filter produces no results."""
+    def test_b30a_first_wallet(self):
+        """Wallet is chronologically first to buy ≥$1K → B30a."""
         analyzer = BehaviorAnalyzer()
-        trades = [_make_trade(amount=5000)]
-        all_trades = [_make_trade(amount=5000)]
-        results = analyzer._check_first_mover(
-            "0xabc", "market1", trades, all_trades,
-        )
+        wallet_trade = _make_trade(amount=2000, hours_ago=2, wallet_address="0xaaa")
+        other_trade  = _make_trade(amount=2000, hours_ago=1, wallet_address="0xbbb")
+        all_trades   = [wallet_trade, other_trade]
+        results = analyzer._check_first_mover("0xaaa", "market1", [wallet_trade], all_trades)
+        assert len(results) == 1
+        assert results[0].filter_id == "B30a"
+
+    def test_b30b_second_wallet(self):
+        """Wallet is 2nd unique buyer → B30b."""
+        analyzer = BehaviorAnalyzer()
+        first_trade  = _make_trade(amount=2000, hours_ago=3, wallet_address="0xaaa")
+        wallet_trade = _make_trade(amount=2000, hours_ago=2, wallet_address="0xbbb")
+        all_trades   = [first_trade, wallet_trade]
+        results = analyzer._check_first_mover("0xbbb", "market1", [wallet_trade], all_trades)
+        assert len(results) == 1
+        assert results[0].filter_id == "B30b"
+
+    def test_b30c_fifth_wallet(self):
+        """Wallet is 5th unique buyer → B30c."""
+        analyzer = BehaviorAnalyzer()
+        all_trades = [
+            _make_trade(amount=2000, hours_ago=5, wallet_address="0x001"),
+            _make_trade(amount=2000, hours_ago=4, wallet_address="0x002"),
+            _make_trade(amount=2000, hours_ago=3, wallet_address="0x003"),
+            _make_trade(amount=2000, hours_ago=2, wallet_address="0x004"),
+        ]
+        wallet_trade = _make_trade(amount=2000, hours_ago=1, wallet_address="0xfff")
+        all_trades.append(wallet_trade)
+        results = analyzer._check_first_mover("0xfff", "market1", [wallet_trade], all_trades)
+        assert len(results) == 1
+        assert results[0].filter_id == "B30c"
+
+    def test_b30_no_fire_sixth(self):
+        """Wallet is 6th unique buyer → no result."""
+        analyzer = BehaviorAnalyzer()
+        all_trades = [
+            _make_trade(amount=2000, hours_ago=6, wallet_address="0x001"),
+            _make_trade(amount=2000, hours_ago=5, wallet_address="0x002"),
+            _make_trade(amount=2000, hours_ago=4, wallet_address="0x003"),
+            _make_trade(amount=2000, hours_ago=3, wallet_address="0x004"),
+            _make_trade(amount=2000, hours_ago=2, wallet_address="0x005"),
+        ]
+        wallet_trade = _make_trade(amount=2000, hours_ago=1, wallet_address="0xfff")
+        all_trades.append(wallet_trade)
+        results = analyzer._check_first_mover("0xfff", "market1", [wallet_trade], all_trades)
+        assert len(results) == 0
+
+    def test_b30_below_min_amount(self):
+        """Wallet trade < $1K (FIRST_MOVER_MIN_AMOUNT) → not counted, no result."""
+        analyzer = BehaviorAnalyzer()
+        small_trade = _make_trade(amount=500, hours_ago=2, wallet_address="0xaaa")
+        results = analyzer._check_first_mover("0xaaa", "market1", [small_trade], [small_trade])
+        assert len(results) == 0
+
+    def test_b30_no_all_trades_no_pm_client(self):
+        """all_trades=None and pm_client=None → no result."""
+        analyzer = BehaviorAnalyzer()
+        wallet_trade = _make_trade(amount=2000, wallet_address="0xaaa")
+        results = analyzer._check_first_mover("0xaaa", "market1", [wallet_trade], None)
+        assert len(results) == 0
+
+    def test_b30_not_in_direction(self):
+        """Wallet bought YES but qualifying trades are all NO → not found → no result."""
+        analyzer = BehaviorAnalyzer()
+        wallet_trade = _make_trade(amount=2000, direction="YES", wallet_address="0xaaa")
+        other_trade  = _make_trade(amount=2000, direction="NO",  wallet_address="0xbbb")
+        results = analyzer._check_first_mover("0xaaa", "market1", [wallet_trade], [other_trade])
         assert len(results) == 0
 
 
