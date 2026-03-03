@@ -2,7 +2,7 @@
 
 > **CONFIDENCIAL — USO PERSONAL**
 > Sistema privado de investigación. No compartir ni distribuir.
-> Última actualización: febrero 2026
+> Última actualización: marzo 2026
 
 ---
 
@@ -129,6 +129,7 @@ Star validation (puede bajar el nivel):
 
 - **Dedup intra-scan:** Jaccard (≥0.5) sobre conjunto de wallet addresses en la misma ventana de 24h. Previene alertar dos veces el mismo grupo.
 - **Consolidación:** Alertas 4★+ pendientes del mismo mercado/dirección se fusionan: se suman wallets y monto.
+- **Historial de score:** Cada upgrade de `score` o `star_level` (vía cross-scan dedup o consolidación) inserta una fila en `alert_score_history` con los valores anteriores/nuevos, el motivo del cambio (`cross_scan_dedup` / `consolidation`) y timestamp. Los campos `*_initial` siguen siendo el sello T0 inmutable.
 - **Resolución:** `run_resolver.py` comprueba la API CLOB diariamente. Si el mercado resolvió YES/NO, actualiza `outcome=correct/incorrect` en todas las alertas pendientes.
 
 ---
@@ -320,6 +321,11 @@ python -m migrations.add_close_reason
 python -m migrations.add_merge_columns
 python -m migrations.reconcile_sell_fields
 python -m migrations.purge_wallet_funding_duplicates
+python -m migrations.add_realized_return
+python -m migrations.add_additional_buy_fields
+python -m migrations.add_odds_at_resolution_raw
+python -m migrations.add_alert_score_history
+python -m migrations.add_dca_price_fields
 
 # ── Scripts de diagnóstico ─────────────────────────────────────────────
 python diag_filter_score_mismatch.py     # detecta alertas con score inconsistente
@@ -352,12 +358,31 @@ Supabase PostgreSQL. Todas las tablas tienen RLS deshabilitado (acceso via servi
 | `system_config` | Kill switches y config en tiempo real (scan_enabled, publish_x, etc.) |
 | `notification_log` | Log de notificaciones enviadas por alerta |
 | `whale_notifications` | Eventos de whale monitor (4-5★) |
+| `alert_score_history` | Changelog de cambios de score/star_level (old/new values, change_reason, timestamp) |
+| `bot_trades` | Registro de operaciones ejecutadas por el bot de trading |
 
 ### Campos ML snapshot en `alerts` (T0 — inmutables post-insert)
 
-Los 11 campos `*_initial` capturan el estado exacto en el momento de la primera detección para entrenamiento de modelos futuros:
+Los 12 campos `*_initial` capturan el estado exacto en el momento de la primera detección. Nunca se modifican por dedup, consolidación ni ninguna operación posterior:
 
 `scan_mode`, `score_initial`, `score_raw_initial`, `odds_at_alert_initial`, `total_amount_initial`, `filters_triggered_initial`, `market_category`, `market_volume_24h_at_alert`, `market_liquidity_at_alert`, `hours_to_deadline`, `wallets_count_initial`, `star_level_initial`
+
+### Campos de tracking post-detección en `alerts`
+
+Campos que se actualizan durante la vida de la alerta (no inmutables):
+
+| Campo | Tipo | Cuándo se escribe |
+|-------|------|-------------------|
+| `actual_return` | FLOAT | Al resolver: retorno binario del mercado — `((1−odds)/odds)×100` para correctas, `−100` para incorrectas |
+| `realized_return` | FLOAT | Al resolver: PnL real del whale — ventas CLOB ponderadas por `sell_pct × pnl_pct` + porción no vendida × `actual_return` |
+| `odds_at_resolution_raw` | FLOAT | Al resolver: precio YES real del último `market_snapshot` antes de resolución (no binario 0/1) |
+| `odds_max` / `odds_min` | FLOAT | Actualizado en cada ciclo de tracker; congelado con el último snapshot al resolver |
+| `additional_buys_count` | INT | Whale monitor: número de compras adicionales (DCA) detectadas post-alerta |
+| `additional_buys_amount` | FLOAT | Whale monitor: monto total acumulado de DCAs en USD |
+| `avg_additional_buy_price` | FLOAT | Whale monitor: precio promedio ponderado por amount de todos los DCAs |
+| `last_additional_buy_price` | FLOAT | Whale monitor: precio de la compra adicional más reciente |
+| `total_sold_pct` | FLOAT | Sell detector: porcentaje neto de la posición que el whale ha vendido |
+| `close_reason` | TEXT | Sell detector / whale monitor: motivo de cierre (`sell_clob`, `net_zero`, `merge_suspected`, etc.) |
 
 ### Índices relevantes
 
@@ -410,10 +435,12 @@ Todos tienen `workflow_dispatch` para ejecución manual.
 
 ## 9. Estado actual y pendientes
 
-### Métricas actuales (feb 2026)
+### Métricas actuales (mar 2026)
 
-- **Alertas resueltas:** 923 (745 correct / 178 incorrect)
-- **Winrate global:** 80.7% vs probabilidad implícita media 73.9%
+- **Alertas totales generadas:** 6,800+
+- **Alertas resueltas:** 2,447
+- **Accuracy global (3+★):** 66.7%
+- **Win rate zona óptima:** 85–90% (alertas con odds efectivas < 0.30)
 - **EV por operación:** +6.8% del stake (edge real confirmado, Z=+4.7σ)
 - **Edge real concentrado en:** precio efectivo 0.70–0.90 (NO tokens con ROI +11–20%)
 - **Rango sin edge:** precio efectivo 0.60–0.70 (EV −8.6%) — candidato a filtrar
@@ -438,11 +465,18 @@ Todos tienen `workflow_dispatch` para ejecución manual.
 
 | Feature | Estado |
 |---------|--------|
-| **OPT-1 — Funding DB cache** | ✅ Implementado. `wallet_funding` rows se cachean 14 días. Reduce llamadas Alchemy ~80% en wallets recurrentes. |
-| **ML snapshot fields** | ✅ 11 campos `*_initial` + `star_level_initial` congelados en T0. Base para training set futuro. |
+| **OPT-1 — Funding DB cache** | ✅ `wallet_funding` rows se cachean 14 días. Reduce llamadas Alchemy ~80% en wallets recurrentes. |
+| **ML snapshot fields** | ✅ 12 campos `*_initial` congelados en T0. Base para training set futuro. Backfill ejecutado sobre historial completo. |
 | **Multi-signal grouping** | ✅ `multi_signal` / `is_secondary` / `alert_group_id` permiten agrupar señales del mismo mercado-scan. |
 | **Merge detection (N12)** | ✅ Detección de CLOB arbitrage en tokens/shares (no dólares). |
-| **Sell Watch** | ✅ Monitoreo de salidas en alertas 3★+, notificación Telegram en 4-5★. |
+| **Sell Watch** | ✅ Monitoreo de salidas en alertas 3★+, notificación Telegram en 4-5★. `sell_timestamp` escribe el timestamp real del trade CLOB. |
+| **Integridad sell totals** | ✅ `_reconcile_sell_totals` solo sube `total_sold_pct`, nunca degrada. Umbral de full exit alineado al 90% consistente con whale_monitor. |
+| **realized_return** | ✅ PnL real del whale: ventas CLOB ponderadas (`sell_pct × pnl_pct`) + porción no vendida × `actual_return`. Backfill ejecutado (2,447 alertas). |
+| **DCA tracking** | ✅ `additional_buys_count`, `additional_buys_amount`, `avg_additional_buy_price`, `last_additional_buy_price` — precio promedio ponderado de compras adicionales post-alerta. |
+| **odds_at_resolution_raw** | ✅ Precio YES real del mercado al resolver (no binario). Capturado del último `market_snapshot` disponible. |
+| **odds_max/min freeze** | ✅ Al resolver, `odds_max`/`odds_min` se actualizan con el último snapshot antes de que el mercado muestre precios binarios. |
+| **alert_score_history** | ✅ Changelog completo de cambios de score/star_level: old/new values, `change_reason`, timestamp. Alimentado desde cross-scan dedup y consolidación. |
 | **B30 (first mover)** | ⏳ Pendiente tabla `trades_history` en Supabase. |
 | **B27 (diamond hands)** | ⏳ Pendiente cobertura pre-alert en sell_detector. |
 | **Filtro precio 0.60–0.70** | ⏳ Candidato a agregar N13 (descuento por precio medio-alto sin convicción clara). |
+| **ML model** | ⏳ Training set completo (2,447 alertas resueltas + campos T0). Siguiente paso: feature engineering + primer modelo de clasificación. |
