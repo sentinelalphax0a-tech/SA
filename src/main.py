@@ -1154,7 +1154,11 @@ def _reconcile_sell_totals(db: SupabaseClient) -> int:
     for alert_id, raw_sum in sums.items():
         correct = round(min(1.0, raw_sum), 6)
         stored = round(current.get(alert_id, 0.0), 6)
-        if abs(correct - stored) < 1e-5:
+        # Only write if the recalculated value is strictly higher than what's stored.
+        # check_net_positions() uses a share-based proxy that can legitimately exceed the
+        # sum of alert_sell_events (which only capture CLOB-visible sells). Never degrade a
+        # higher value — the larger reading is more conservative and protects full-exit labels.
+        if correct <= stored + 1e-5:
             continue
         try:
             db.client.table("alerts").update(

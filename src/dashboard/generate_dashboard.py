@@ -412,13 +412,17 @@ def compute_stats(alerts: list[dict], markets: dict) -> dict:
         _mid = _a.get("market_id", "")
         _mid_counts[_mid] = _mid_counts.get(_mid, 0) + 1
 
-    # Full exit: 100% sold OR position disappeared without trace.
+    # Full exit: ≥90% sold OR position disappeared without trace.
+    # 90% matches the whale_monitor FULL_EXIT threshold (sell_amount >= position * 0.90).
+    # alert_sell_events stores the actual sell_pct (e.g. 0.92 for a 92% sell), so capping
+    # the dashboard threshold at 1.0 would silently exclude legitimate full exits whenever
+    # _reconcile_sell_totals writes the real value back from alert_sell_events.
     # These are excluded from the main accuracy pool — the market resolution
     # was never reached, so outcome reflects coincidence not signal quality.
     def _is_full_exit(a: dict) -> bool:
         total_sold = a.get("total_sold_pct") or 0
         cr = (a.get("close_reason") or "").lower()
-        return total_sold >= 1.0 or cr == "position_gone"
+        return total_sold >= 0.9 or cr == "position_gone"
 
     # Exclude merge_confirmed AND full exits from accuracy/P&L
     stats_resolved = [
