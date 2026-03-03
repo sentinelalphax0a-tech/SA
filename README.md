@@ -41,13 +41,13 @@ Sentinel Alpha es un **detector de insider trading en Polymarket**. Identifica w
 | **13 Feb 2026** | Primer éxito confirmado: cluster de government shutdown. Múltiples alertas 5★ detectaron smart money apostando NO en wallets coordinadas con fondeo compartido. Todas acertaron. |
 | **1ª semana** | Descubierto y corregido triple-counting bug (B14+B18d+B19b inflaba artificialmente el score). Refactor a grupos mutuamente excluyentes en el pipeline de scoring. |
 | **Feb 2026** | Cross-scan dedup (Jaccard), consolidación 4★+, dual-mode quick/deep, 12 campos ML snapshot inmutables (T0). El sistema pasa de MVP a producción en ~3 semanas. |
-| **Mar 2026** | 55+ filtros activos, 910 tests automatizados, pipeline ML completo. Backfill de 2,447 alertas históricas. Auditoría y corrección de integridad de datos: sell totals, sell_timestamp real, realized_return, DCA tracking, odds_at_resolution_raw, alert_score_history. |
+| **Mar 2026** | 57+ filtros activos, 922 tests automatizados, pipeline ML completo. B27 (Diamond Hands) y B30 (First Mover) activados. Sistema de auditoría semanal (`system_audit/`) con métricas globales, segmentadas, rolling y test bayesiano. Primer audit (2026-03-03): n=392 mercados únicos, WR=74.7%, EV=+8.68%/trade, P(edge>0)=97%. Freeze de scoring hasta mayo 2026. |
 
 ### De MVP a producción en 3 semanas
 
 El sistema arrancó el 10 de febrero con una arquitectura básica: 15 filtros sin categorías, scoring plano sin multiplicadores de monto ni diversidad, scans manuales de 35+ minutos, y sin sistema de deduplicación entre scans consecutivos. La primera semana reveló el triple-counting bug — tres filtros del grupo B disparaban simultáneamente y sus puntos se sumaban en lugar de excluirse mutuamente, inflando scores artificialmente. Corregirlo requirió refactorizar el sistema de grupos mutuamente excluyentes.
 
-En las semanas siguientes se implementaron cross-scan dedup (Jaccard sobre wallet addresses + ventana 24h), consolidación de alertas 4★+ (fusión en lugar de duplicación), el modo dual quick/deep, y los 12 campos T0 inmutables para el training set de ML. Para marzo el sistema tiene 55+ filtros en 6 categorías, 910 tests automatizados, y un historial validado de 2,447 resoluciones.
+En las semanas siguientes se implementaron cross-scan dedup (Jaccard sobre wallet addresses + ventana 24h), consolidación de alertas 4★+ (fusión en lugar de duplicación), el modo dual quick/deep, y los 12 campos T0 inmutables para el training set de ML. Para marzo el sistema tiene 57+ filtros en 6 categorías, 922 tests automatizados, y un historial validado de 2,447 resoluciones. El 3 de marzo se activaron B27 (Diamond Hands) y B30 (First Mover), completando la cobertura de comportamiento. El scoring queda congelado 8 semanas hasta mayo 2026 para acumular datos limpios para el training set de ML.
 
 ---
 
@@ -110,12 +110,10 @@ En las semanas siguientes se implementaron cross-scan dedup (Jaccard sobre walle
 |---------|--------|---------|-----------|
 | Wallet | W01–W11 | 7 | Edad, n° mercados, primera tx Polymarket, balance redondo |
 | Origin | O01–O03 | 3 | Fondeo desde exchange/bridge/mixer on-chain |
-| Behavior | B01–B30 | ~20 activos* | Acumulación, timing, sizing, convicción de odds |
+| Behavior | B01–B30 | ~22 activos | Acumulación, timing, sizing, convicción de odds, diamond hands, first mover |
 | Confluence | C01–C07, COORD04 | 9 | Múltiples wallets coordinadas, mismo origen funding |
 | Market | M01–M05c | 8 | Volumen anómalo, odds rotas, concentración, deadline |
 | Negative | N01–N12 | 17 | Bot, noticias, arbitraje, degen, scalper, merge CTF |
-
-*B27 (diamond hands) y B30 (first mover) están desactivados — ver §10.
 
 ### Sistema de scoring
 
@@ -198,9 +196,15 @@ SA/
 │   │   └── generate_dashboard.py # Genera docs/index.html (HTML estático)
 │   └── scripts/
 │       └── check_resolutions.py  # Chequeo diario de resoluciones (00:00 UTC)
+├── system_audit/
+│   ├── run_audit.py            # Auditoría semanal: métricas globales, rolling, segmentadas, veredicto
+│   ├── bayesian_edge_analysis.py # Z-test + Bayesiano + Monte Carlo — validación del edge
+│   ├── snapshots/              # JSON por ejecución (excluidos de git; .gitkeep tracked)
+│   ├── bayesian/               # JSON por milestone bayesiano
+│   └── master_summary.csv      # Tracking longitudinal de métricas (excluido de git)
 ├── migrations/                 # Scripts one-shot de esquema y mantenimiento DB
 ├── vacunas/                    # Scripts de corrección/backfill (aplicadas/ = ejecutadas)
-├── tests/                      # pytest — 33 archivos, 910 tests
+├── tests/                      # pytest — 33 archivos, 922 tests
 ├── docs/
 │   └── index.html              # Dashboard HTML generado (no editar a mano)
 ├── .github/workflows/          # 8 GitHub Actions workflows
@@ -254,8 +258,8 @@ SA/
 | `ODDS_MIN` | `config.py:64` | `0.05` | Precio mínimo para alertas | 0.03–0.10 |
 | `ODDS_MAX` | `config.py:65` | `0.55` | Precio máximo quick scan | 0.50–0.65 |
 | `ODDS_MAX_EXTENDED` | `config.py:66` | `0.70` | Precio máximo si score ≥ 90 | 0.65–0.80 |
-| `ENABLE_B27` | `config.py:339` | `False` | Diamond hands filter — **desactivado** | — |
-| `ENABLE_B30` | `config.py:352` | `False` | First mover filter — **desactivado** | — |
+| `ENABLE_B27` | `config.py:343` | `True` | Diamond hands (Opción A: sell via `is_market_order`) — **activo desde 2026-03-03** | — |
+| `ENABLE_B30` | `config.py:356` | `True` | First mover (24h CLOB lookback, fallback scan) — **activo desde 2026-03-03** | — |
 | `ALLIN_MIN_AMOUNT` | `config.py:349` | `$3,500` | Monto mínimo para disparar B28 (all-in) | 2000–5000 |
 | `PUBLISH_SCORE_THRESHOLD_X` | `config.py:73` | `70` | Score mínimo para publicar en X | 60–90 |
 | `PUBLISH_SCORE_THRESHOLD_TELEGRAM` | `config.py:75` | `50` | Score mínimo para Telegram | 40–70 |
@@ -348,6 +352,13 @@ python -m migrations.add_additional_buy_fields
 python -m migrations.add_odds_at_resolution_raw
 python -m migrations.add_alert_score_history
 python -m migrations.add_dca_price_fields
+
+# ── Auditoría de calidad de señal ──────────────────────────────────────
+# Auditoría semanal: métricas globales, rolling, segmentadas, veredicto
+python -m system_audit.run_audit
+
+# Test bayesiano + frecuentista + Monte Carlo del edge estadístico
+python -m system_audit.bayesian_edge_analysis
 
 # ── Scripts de diagnóstico ─────────────────────────────────────────────
 python diag_filter_score_mismatch.py     # detecta alertas con score inconsistente
@@ -473,6 +484,21 @@ Todos tienen `workflow_dispatch` para ejecución manual.
 - **Edge real concentrado en:** precio efectivo 0.70–0.90 (NO tokens con ROI +11–20%)
 - **Rango sin edge:** precio efectivo 0.60–0.70 (EV −8.6%) — candidato a filtrar
 
+**Primer audit sistemático (2026-03-03, pool deduplicado con filtros dashboard):**
+
+| Métrica | Valor |
+|---------|-------|
+| Mercados únicos en accuracy pool | 392 (2,447 brutos → dedup por market_id + exclusiones) |
+| Win rate global | 74.7% |
+| EV por trade | +8.68% |
+| Edge estadístico (Z-test vs p_market) | Z=1.88, p=0.030 ★★ |
+| P(edge > 0) — Bayesiano | 97.0% |
+| Monte Carlo p-value (100k sims) | 0.017 ★★ |
+| Segmento más significativo | 1★: Z=2.20, MC p=0.008 ★★★, P(edge>0)=98.6% |
+| Rolling últimos 30 trades | WR=86.7%, EV=+11.87% |
+| Rolling últimos 50 trades | WR=88.0%, EV=+15.93% |
+| Veredicto automático | **MEJORANDO** |
+
 ### Casos de éxito documentados
 
 | Evento | Señal detectada | Resultado |
@@ -495,17 +521,16 @@ Todos tienen `workflow_dispatch` para ejecución manual.
 
 - **W (Wallet):** 7 activos (W01, W02, W03, W04, W05, W09, W11)
 - **O (Origin):** 3 activos (O01, O02, O03)
-- **B (Behavior):** ~20 activos — B27 y B30 desactivados (ver abajo)
+- **B (Behavior):** ~22 activos — incluye B27a/b (diamond hands) y B30a/b/c (first mover) activados el 2026-03-03
 - **C (Confluence):** 9 activos (C01, C02, C03a–d, C05, C06, C07, COORD04)
 - **M (Market):** 8 activos (M01, M02, M03, M04a/b, M05a/b/c)
 - **N (Negative):** 17 activos (N01–N12, con sub-tiers)
 
-### Filtros desactivados
+**Total: 57+ filtros activos** (5 subfiltros nuevos vs estado anterior).
 
-| Filtro | Razón |
-|--------|-------|
-| `B27` (diamond hands) | `sell_detector` solo cubre sells post-alerta, no pre-alert. Activar causaría falsos positivos al no tener historial completo de posiciones. |
-| `B30` (first mover) | Requiere tabla de historial de trades en Supabase que no existe. |
+### Freeze de scoring (2026-03-03 → mayo 2026)
+
+A partir del 3 de marzo de 2026, el sistema entra en **freeze de 8 semanas**. No se modificarán umbrales, pesos, puntos de filtros ni lógica de estrellas hasta mayo 2026. El objetivo es acumular 8 semanas de datos con configuración estable para que el training set de ML tenga coherencia interna. Solo se permiten cambios de infraestructura (migración mini PC, dashboard, auditorías).
 
 ### Implementaciones recientes
 
@@ -522,7 +547,9 @@ Todos tienen `workflow_dispatch` para ejecución manual.
 | **odds_at_resolution_raw** | ✅ Precio YES real del mercado al resolver (no binario). Capturado del último `market_snapshot` disponible. |
 | **odds_max/min freeze** | ✅ Al resolver, `odds_max`/`odds_min` se actualizan con el último snapshot antes de que el mercado muestre precios binarios. |
 | **alert_score_history** | ✅ Changelog completo de cambios de score/star_level: old/new values, `change_reason`, timestamp. Alimentado desde cross-scan dedup y consolidación. |
-| **B30 (first mover)** | ⏳ Pendiente tabla `trades_history` en Supabase. |
-| **B27 (diamond hands)** | ⏳ Pendiente cobertura pre-alert en sell_detector. |
-| **Filtro precio 0.60–0.70** | ⏳ Candidato a agregar N13 (descuento por precio medio-alto sin convicción clara). |
-| **ML model** | ⏳ Training set completo (2,447 alertas resueltas + campos T0). Siguiente paso: feature engineering + primer modelo de clasificación. |
+| **B27 (diamond hands)** | ✅ Activo desde 2026-03-03. Opción A: sin query a `wallet_positions`. Sell detection vía `is_market_order=False` (CLOB side=SELL). B27a (24-48h, +5%) = +15pts; B27b (72h+, +10%) = +20pts. |
+| **B30 (first mover)** | ✅ Activo desde 2026-03-03. Lookback 24h vía CLOB Data API (`get_recent_trades(minutes=1440)`); fallback a scan window si falla. B30a (1º) = +20pts; B30b (top 3) = +10pts; B30c (top 5) = +5pts. |
+| **system_audit/run_audit.py** | ✅ Auditoría semanal automatizada. Métricas globales + segmentadas (eff_price, star_level, combinaciones), rolling 30/50, comparación con snapshot anterior, veredicto automático (EDGE ESTABLE / MEJORANDO / POSIBLE DEGRADACIÓN). Salida: JSON snapshot + master_summary.csv. |
+| **system_audit/bayesian_edge_analysis.py** | ✅ Test bayesiano permanente. Z-test (H0: p_hat == p_market), posterior Beta(1+wins, 1+losses), P(edge>0), IC 95%, Monte Carlo 100k simulaciones bajo H0. Por segmento global, eff_price band y star_level. Snapshot JSON + comparación histórica. |
+| **Filtro precio 0.60–0.70** | ⏳ Candidato a agregar N13 (descuento por precio medio-alto sin convicción clara). Post-freeze. |
+| **ML model** | ⏳ Training set completo (2,447 alertas resueltas + campos T0). Siguiente paso post-freeze: feature engineering + primer modelo de clasificación. |
