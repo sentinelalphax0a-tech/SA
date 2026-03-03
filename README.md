@@ -9,14 +9,15 @@
 ## Índice
 
 1. [Qué es Sentinel Alpha](#1-qué-es-sentinel-alpha)
-2. [Cómo funciona — flujo del scan](#2-cómo-funciona--flujo-del-scan)
-3. [Estructura del proyecto](#3-estructura-del-proyecto)
-4. [Configuración y variables de comportamiento](#4-configuración-y-variables-de-comportamiento)
-5. [Comandos](#5-comandos)
-6. [Base de datos](#6-base-de-datos)
-7. [CI/CD — GitHub Actions](#7-cicd--github-actions)
-8. [Costes](#8-costes)
-9. [Estado actual y pendientes](#9-estado-actual-y-pendientes)
+2. [Evolución del proyecto](#2-evolución-del-proyecto)
+3. [Cómo funciona — flujo del scan](#3-cómo-funciona--flujo-del-scan)
+4. [Estructura del proyecto](#4-estructura-del-proyecto)
+5. [Configuración y variables de comportamiento](#5-configuración-y-variables-de-comportamiento)
+6. [Comandos](#6-comandos)
+7. [Base de datos](#7-base-de-datos)
+8. [CI/CD — GitHub Actions](#8-cicd--github-actions)
+9. [Costes](#9-costes)
+10. [Estado actual y pendientes](#10-estado-actual-y-pendientes)
 
 ---
 
@@ -30,7 +31,27 @@ Sentinel Alpha es un **detector de insider trading en Polymarket**. Identifica w
 
 ---
 
-## 2. Cómo funciona — flujo del scan
+## 2. Evolución del proyecto
+
+### Línea de tiempo
+
+| Fecha | Hito |
+|-------|------|
+| **10 Feb 2026** | MVP funcional — ~15 filtros básicos, scans manuales de 35+ minutos, sin deduplicación entre scans consecutivos. Primera alerta real: "US strikes Iran". |
+| **13 Feb 2026** | Primer éxito confirmado: cluster de government shutdown. Múltiples alertas 5★ detectaron smart money apostando NO en wallets coordinadas con fondeo compartido. Todas acertaron. |
+| **1ª semana** | Descubierto y corregido triple-counting bug (B14+B18d+B19b inflaba artificialmente el score). Refactor a grupos mutuamente excluyentes en el pipeline de scoring. |
+| **Feb 2026** | Cross-scan dedup (Jaccard), consolidación 4★+, dual-mode quick/deep, 12 campos ML snapshot inmutables (T0). El sistema pasa de MVP a producción en ~3 semanas. |
+| **Mar 2026** | 55+ filtros activos, 910 tests automatizados, pipeline ML completo. Backfill de 2,447 alertas históricas. Auditoría y corrección de integridad de datos: sell totals, sell_timestamp real, realized_return, DCA tracking, odds_at_resolution_raw, alert_score_history. |
+
+### De MVP a producción en 3 semanas
+
+El sistema arrancó el 10 de febrero con una arquitectura básica: 15 filtros sin categorías, scoring plano sin multiplicadores de monto ni diversidad, scans manuales de 35+ minutos, y sin sistema de deduplicación entre scans consecutivos. La primera semana reveló el triple-counting bug — tres filtros del grupo B disparaban simultáneamente y sus puntos se sumaban en lugar de excluirse mutuamente, inflando scores artificialmente. Corregirlo requirió refactorizar el sistema de grupos mutuamente excluyentes.
+
+En las semanas siguientes se implementaron cross-scan dedup (Jaccard sobre wallet addresses + ventana 24h), consolidación de alertas 4★+ (fusión en lugar de duplicación), el modo dual quick/deep, y los 12 campos T0 inmutables para el training set de ML. Para marzo el sistema tiene 55+ filtros en 6 categorías, 910 tests automatizados, y un historial validado de 2,447 resoluciones.
+
+---
+
+## 3. Cómo funciona — flujo del scan
 
 ```
 ┌─────────────────────────────────────────────────────┐
@@ -94,7 +115,7 @@ Sentinel Alpha es un **detector de insider trading en Polymarket**. Identifica w
 | Market | M01–M05c | 8 | Volumen anómalo, odds rotas, concentración, deadline |
 | Negative | N01–N12 | 17 | Bot, noticias, arbitraje, degen, scalper, merge CTF |
 
-*B27 (diamond hands) y B30 (first mover) están desactivados — ver §9.
+*B27 (diamond hands) y B30 (first mover) están desactivados — ver §10.
 
 ### Sistema de scoring
 
@@ -134,7 +155,7 @@ Star validation (puede bajar el nivel):
 
 ---
 
-## 3. Estructura del proyecto
+## 4. Estructura del proyecto
 
 ```
 SA/
@@ -178,7 +199,8 @@ SA/
 │   └── scripts/
 │       └── check_resolutions.py  # Chequeo diario de resoluciones (00:00 UTC)
 ├── migrations/                 # Scripts one-shot de esquema y mantenimiento DB
-├── tests/                      # pytest — ~35 archivos de test
+├── vacunas/                    # Scripts de corrección/backfill (aplicadas/ = ejecutadas)
+├── tests/                      # pytest — 33 archivos, 910 tests
 ├── docs/
 │   └── index.html              # Dashboard HTML generado (no editar a mano)
 ├── .github/workflows/          # 8 GitHub Actions workflows
@@ -189,7 +211,7 @@ SA/
 
 ---
 
-## 4. Configuración y variables de comportamiento
+## 5. Configuración y variables de comportamiento
 
 ### Variables de entorno (`.env` + GitHub Secrets)
 
@@ -280,7 +302,7 @@ SA/
 
 ---
 
-## 5. Comandos
+## 6. Comandos
 
 ```bash
 # Activar entorno virtual
@@ -337,7 +359,7 @@ python health_check.py                   # check general de salud del sistema
 
 ---
 
-## 6. Base de datos
+## 7. Base de datos
 
 Supabase PostgreSQL. Todas las tablas tienen RLS deshabilitado (acceso via service key).
 
@@ -352,13 +374,13 @@ Supabase PostgreSQL. Todas las tablas tienen RLS deshabilitado (acceso via servi
 | `wallet_categories` | Categorización de wallets (insider/degen/unknown) |
 | `alert_tracking` | Seguimiento post-alerta de price moves |
 | `alert_sell_events` | Eventos de salida detectados (sell watch) |
+| `alert_score_history` | Changelog de cambios de score/star_level (old/new values, change_reason, timestamp) |
 | `scans` | Log de cada ejecución de scan (métricas, errores) |
 | `weekly_reports` | Reportes semanales generados |
 | `smart_money_leaderboard` | Ranking de wallets por PnL estimado |
 | `system_config` | Kill switches y config en tiempo real (scan_enabled, publish_x, etc.) |
 | `notification_log` | Log de notificaciones enviadas por alerta |
 | `whale_notifications` | Eventos de whale monitor (4-5★) |
-| `alert_score_history` | Changelog de cambios de score/star_level (old/new values, change_reason, timestamp) |
 | `bot_trades` | Registro de operaciones ejecutadas por el bot de trading |
 
 ### Campos ML snapshot en `alerts` (T0 — inmutables post-insert)
@@ -395,11 +417,15 @@ idx_wallet_funding_created_at
 -- alerts (búsquedas frecuentes por outcome y market)
 idx_alerts_outcome
 idx_alerts_market_id
+
+-- alert_score_history
+idx_score_history_alert
+idx_score_history_ts
 ```
 
 ---
 
-## 7. CI/CD — GitHub Actions
+## 8. CI/CD — GitHub Actions
 
 8 workflows en `.github/workflows/`:
 
@@ -420,30 +446,50 @@ Todos tienen `workflow_dispatch` para ejecución manual.
 
 ---
 
-## 8. Costes
+## 9. Costes
 
 | Servicio | Coste | Notas |
 |----------|-------|-------|
-| Alchemy | ~$1–2 por deep scan | ~50k–100k CUs por scan profundo. Free tier: 30M CUs/mes → ~300–600 deep scans/mes gratis |
-| Supabase | Gratis (free tier) | 500 MB incluidos. Con ~923 alertas resueltas + wallet_funding, actualmente <50 MB. Años de margen. |
+| Alchemy | ~$30/mes | Quick scans en GH Actions consumen ~1–2M CUs/mes. Deep scans locales: ~50k–100k CUs cada uno. Cargo por volumen de API. |
+| Supabase | Gratis (free tier) | 500 MB incluidos. Con 6,800+ alertas + wallet_funding, actualmente <100 MB. Margen amplio. |
 | GitHub Actions | Gratis | 2,000 min/mes en free tier. Quick scan: ~3 min × 8/día × 30 días ≈ 720 min/mes. |
 | Telegram Bot | Gratis | Sin límite relevante para uso personal |
 | Twitter/X API | Gratis (free tier) | Límite: 1,500 tweets/mes. Con cap de 10/día → <310/mes |
 | Polymarket APIs | Gratis | APIs públicas sin autenticación |
 
+**Migración planificada:** Despliegue en mini PC local con PostgreSQL propio eliminará la dependencia de Supabase, reducirá los costes de Alchemy (scans locales sin pasar por GH Actions) y permitirá scans cada 10 minutos.
+
 ---
 
-## 9. Estado actual y pendientes
+## 10. Estado actual y pendientes
 
 ### Métricas actuales (mar 2026)
 
 - **Alertas totales generadas:** 6,800+
 - **Alertas resueltas:** 2,447
 - **Accuracy global (3+★):** 66.7%
-- **Win rate zona óptima:** 85–90% (alertas con odds efectivas < 0.30)
+- **Win rate zona óptima:** 80.7% (alertas con precio efectivo ≥ 0.70)
 - **EV por operación:** +6.8% del stake (edge real confirmado, Z=+4.7σ)
 - **Edge real concentrado en:** precio efectivo 0.70–0.90 (NO tokens con ROI +11–20%)
 - **Rango sin edge:** precio efectivo 0.60–0.70 (EV −8.6%) — candidato a filtrar
+
+### Casos de éxito documentados
+
+| Evento | Señal detectada | Resultado |
+|--------|----------------|-----------|
+| **Government shutdown (13 Feb)** | Múltiples alertas 5★: wallets coordinadas apostando NO con fondeo compartido desde el mismo intermediario, entradas sincronizadas. | ✅ Correcto — smart money tenía información. |
+| **Supreme Court — tariffs** | Wallet de 1,441 días de antigüedad (4 años sin actividad en Polymarket) que deposita $41,569 de golpe apostando NO. Patrón clásico de wallet dormida activada por información privilegiada. | ✅ Correcto |
+| **Iran strikes (10 Feb)** | Wallets nuevas con compras coordinadas. El filtro N02 (news checker) restó puntos al detectar cobertura pública previa — reduciendo el score a alerta menor en lugar de 5★. | Caso de estudio: validó que el sistema penaliza correctamente cuando hay noticias públicas simultáneas. |
+
+### Roadmap
+
+| Período | Objetivo |
+|---------|----------|
+| **Marzo 2026** | Data collection y auditorías semanales de calidad de señal. Preparación del training set para ML. Migración planificada a mini PC local. |
+| **Abril 2026** | Bot de trading en shadow mode (simula operaciones sin ejecutar real). Validación de estrategia de sizing y gestión de riesgo. Transición a live con capital semilla (~$1,000). |
+| **Mayo–Julio 2026** | ML training con 3–4 meses de datos limpios. Dos modelos para Polymarket: (1) meta-labeling para filtrar false positives, (2) predictor de calidad de señal. Un modelo para Forex que correlacione eventos de prediction markets con movimientos FX en divisas relacionadas. |
+| **Julio 2026+** | Integración del bot con capa ML: señales heurísticas + score ML → decisión de ejecución. Dashboard con ventanas de ML, análisis de feature importance, hosting local via Cloudflare tunnel. |
+| **2027** | Escalado: licenciamiento a fondos cuantitativos o modelo de suscripción para traders externos. |
 
 ### Filtros activos
 

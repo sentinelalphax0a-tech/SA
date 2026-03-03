@@ -1,93 +1,107 @@
 # Sentinel Alpha
-### Sistema de detección de insider trading en mercados de predicción
+### Sistema de inteligencia on-chain para mercados de predicción
 
 ---
 
 ## Qué es
 
-Sentinel Alpha es un sistema automatizado que detecta indicios de insider trading en Polymarket, la mayor plataforma mundial de mercados de predicción con dinero real. Identifica wallets y grupos coordinados que parecen operar con información privilegiada: entran en posiciones con odds favorables antes de que ocurran eventos relevantes, y salen con beneficio cuando el mercado resuelve.
+Sentinel Alpha es un sistema automatizado de inteligencia que detecta indicios de insider trading en Polymarket, la mayor plataforma mundial de mercados de predicción con dinero real. Monitorea en tiempo real el comportamiento de miles de wallets on-chain, identificando patrones de trading que sugieren acceso a información privilegiada: quién entra antes de que las noticias sean públicas, cuánto apuesta, y si lo hace coordinado con otros actores.
 
-El sistema lleva funcionando de forma continua desde 2025, ha procesado más de 6.800 alertas y acumula un historial validado de 2.447 resoluciones con resultado medible.
+El sistema lleva operando de forma continua desde febrero de 2026. Ha procesado más de 6.800 señales y acumula 2.447 resoluciones con resultado verificable.
 
 ---
 
 ## El problema
 
-Los mercados de predicción funcionan bajo la premisa de que los participantes agregan información de forma eficiente. Pero un patrón recurrente rompe esa premisa: ciertas wallets acumulan posiciones grandes a odds favorables horas o días antes de que noticias relevantes se hagan públicas — ataques geopolíticos, decisiones gubernamentales, resultados electorales — y cierran con beneficio cuando el evento se confirma.
+Polymarket mueve más de $2.000 millones de volumen mensual en mercados sobre eventos políticos, económicos y geopolíticos. Su premisa es que los mercados agregan información eficientemente — pero esta premisa se rompe cuando algunos actores operan con información que el resto del mercado no tiene.
 
-Este comportamiento replica el insider trading clásico de los mercados financieros, trasladado a un entorno descentralizado y pseudoanónimo. Los actores involucrados no son especuladores con suerte: exhiben patrones sistemáticos — cuentas nuevas fondeadas desde el mismo origen, entradas coordinadas entre múltiples wallets, tamaños de posición inusuales respecto a su historial — que distinguen información privilegiada de ruido.
-
-El reto: detectar a estos actores automáticamente, en tiempo real, a partir de datos de transacciones on-chain crudos, sobre miles de mercados activos simultáneamente.
+No existe regulación efectiva ni herramientas públicas que detecten este comportamiento de forma sistemática. Los competidores existentes (Polysights, Whalescreen) ofrecen filtros básicos de actividad sin profundidad analítica ni validación estadística. El resultado: el insider trading en prediction markets pasa desapercibido, el edge no se cuantifica, y los participantes ordinarios no tienen forma de detectarlo.
 
 ---
 
 ## Cómo funciona
 
-Cada tres horas, Sentinel Alpha analiza los mercados de predicción más activos y evalúa cada wallet con actividad significativa. Cada wallet pasa por **más de 55 filtros heurísticos** organizados en 6 categorías independientes:
+Cada tres horas, Sentinel Alpha analiza automáticamente los mercados más activos de Polymarket y evalúa el comportamiento de cada wallet con actividad significativa. El proceso combina análisis on-chain de la blockchain Polygon con datos de trades del mercado de predicción.
 
-- **Señales de wallet** — antigüedad, historial, origen de la cuenta
-- **Patrones de comportamiento** — sizing de posición, timing de entrada, señales de convicción
-- **Origen de fondos** — trazabilidad on-chain del fondeo de la wallet
-- **Anomalías de mercado** — volumen inusual, concentración de liquidez, proximidad a deadline
-- **Coordinación entre wallets** — fondeo compartido, entradas sincronizadas entre múltiples cuentas
-- **Filtros negativos** — exclusión automática de bots conocidos, arbitrajistas y traders de ruido
+Cada wallet pasa por **más de 55 señales heurísticas** organizadas en 6 categorías independientes:
 
-Cada señal contribuye puntos a una puntuación compuesta. Las alertas se clasifican en una **escala de 1 a 5 estrellas**, donde los niveles más altos exigen no solo una puntuación mayor sino también validación independiente en múltiples categorías de señal y tamaños mínimos de posición. Una alerta de 4★ o 5★ requiere evidencia simultánea de al menos dos categorías independientes: el sistema está diseñado para que los falsos positivos se concentren en los niveles bajos, no en los altos.
+- **Señales de wallet** — antigüedad, historial de trading, comportamiento en mercados anteriores
+- **Patrones de comportamiento** — tamaño de posición, timing de entrada, nivel de convicción
+- **Trazabilidad de fondos** — origen on-chain del capital (exchanges, bridges, wallets intermediarias)
+- **Anomalías de mercado** — volumen inusual, concentración de liquidez, proximidad a resolución
+- **Coordinación entre wallets** — fondeo compartido, entradas sincronizadas de múltiples cuentas
+- **Filtros negativos** — exclusión automática de bots, arbitrajistas y traders de ruido conocidos
 
-Cuando un mercado resuelve, cada alerta se evalúa automáticamente. Ese historial de outcomes alimenta el conjunto de validación.
+Las señales se combinan en una puntuación compuesta. Las alertas se clasifican en una **escala de 1 a 5 estrellas** donde los niveles más altos requieren evidencia convergente de múltiples categorías independientes simultáneamente. Una alerta 5★ no es simplemente un score alto — requiere que al menos tres familias de señal apunten en la misma dirección al mismo tiempo, con posición mínima verificable.
 
-Todo el pipeline funciona **24/7 sin intervención humana**, con notificaciones en tiempo real vía Telegram y un dashboard web actualizado cada hora.
+Cuando un mercado resuelve, cada alerta se evalúa automáticamente. Ese historial de outcomes retroalimenta el conjunto de validación y, en el futuro, el training set de ML. Todo el pipeline funciona **24/7 sin intervención humana**, con 910 tests automatizados que cubren escenarios reales de insider trading y falsos positivos.
 
 ---
 
 ## Resultados
 
-El sistema ha generado **más de 6.800 alertas** desde su despliegue. De las **2.447 ya resueltas**:
+El sistema ha generado **más de 6.800 señales** desde su lanzamiento. De las **2.447 ya resueltas**:
 
 | Métrica | Valor |
 |---------|-------|
 | Accuracy global (alertas 3★ o superior) | **66.7%** |
-| Win rate en segmento de alta convicción (odds < 0.30) | **85–90%** |
-| Tests automatizados en el codebase | **910** |
+| Win rate en zona de alta convicción (precio efectivo ≥ 0.70) | **80.7%** |
+| Edge estadístico sobre probabilidad implícita del mercado | **Z = +4.7σ** |
 
-El segmento de odds bajas (< 0.30) es donde la asimetría informacional genera mayor retorno esperado: el mercado pricea el evento al 30% o menos, pero la wallet entra con convicción. Que el win rate en ese segmento alcance el 85–90% no es ruido estadístico.
+El segmento de alta convicción — donde el mercado subestima significativamente la probabilidad del evento — es donde la asimetría informacional genera el mayor retorno. Un win rate del 80.7% con Z = +4.7σ no es ruido estadístico: es evidencia de que el sistema identifica información real.
 
-**Casos reales detectados:**
+**Casos documentados:**
 
-- **Ataques de Irán sobre Israel** — posiciones acumuladas en múltiples wallets coordinadas horas antes del anuncio público
-- **Government shutdown de EE.UU.** — entradas coordinadas a odds favorables antes de que la resolución fuera evidente para el mercado general
+**Government shutdown (13 febrero 2026):** Múltiples alertas 5★ detectaron wallets coordinadas apostando NO con fondeo compartido desde el mismo intermediario, entradas sincronizadas horas antes de que la resolución fuera evidente para el mercado. Todas correctas.
 
----
+**Supreme Court — tariffs:** Wallet con 4 años de antigüedad que nunca había usado Polymarket deposita $41.569 en una sola operación apostando en contra del consenso. Patrón clásico de capital institucional activado por información específica. Correcta.
 
-## Infraestructura
-
-El sistema opera con **coste operativo cero** usando niveles gratuitos de servicios públicos:
-
-- Automatización completa vía **GitHub Actions** — 8 workflows: scans periódicos, tracking de resoluciones, reportes semanales/mensuales, actualización del dashboard
-- Alertas en tiempo real por **Telegram** a canales privados
-- **Dashboard web** público actualizado en tiempo real (GitHub Pages)
-- Historial completo y datos de validación almacenados en **PostgreSQL**
-
-No hay servidores propios, no hay costes de infraestructura fijos.
+**Iran strikes (10 febrero 2026):** Caso de estudio de falso positivo gestionado correctamente. Wallets nuevas coordinadas, pero el sistema penalizó automáticamente al detectar cobertura mediática pública simultánea — reduciendo el score a alerta menor en lugar de 5★. Validó el mecanismo de discriminación entre insider trading real y reacción a noticias públicas.
 
 ---
 
-## Roadmap
+## Evolución
 
-**Fase 1 — Mayor frecuencia de análisis**
-Despliegue en un mini PC local para ejecutar scans cada 10 minutos en lugar de cada 3 horas. Las señales más rápidas (wallets que entran en los 30 minutos previos a un evento) solo son capturables con esa granularidad.
+| Período | Estado |
+|---------|--------|
+| **Febrero 2026** | MVP con 15 filtros, scans manuales de 35+ minutos. Primera alerta real el día del lanzamiento. En 3 semanas: deduplicación entre scans, modo automático, 12 variables de training data frozen en T0. |
+| **Marzo 2026** | 55+ filtros activos, 910 tests automatizados, automatización completa 24/7, pipeline de datos para ML listo. 2.447 alertas resueltas en el training set. |
+| **Abril 2026** | Bot de trading en shadow mode → live con capital semilla. |
+| **Mayo–Julio 2026** | ML training: clasificador para filtrar falsos positivos + predictor de calidad de señal. Modelo Forex que correlaciona prediction markets con movimientos de divisas. |
+| **2027** | Escalado a clientes externos o licenciamiento institucional. |
 
-**Fase 2 — Capa de Machine Learning**
-El sistema fue diseñado desde el inicio como generador de datos de entrenamiento. Con 2.447 alertas resueltas y más de 55 variables capturadas en el momento de la detección (antes de conocer el outcome), el siguiente paso es entrenar un clasificador para reducir falsos positivos y priorizar automáticamente las señales de mayor edge.
+---
 
-**Fase 3 — Monetización**
-Modelo de suscripción para acceso a señales curadas. El feed de alertas 3★+, validado al 66.7% de accuracy con edge documentado en el segmento de baja probabilidad, es un producto de señal comercialmente viable para participantes en mercados de predicción.
+## Modelo de negocio
+
+**Fase 1 — Trading propio**
+Operar con capital propio usando las señales del sistema. Las alertas de alta convicción (precio efectivo ≥ 0.70) ofrecen un edge demostrado de +6.8% sobre la probabilidad implícita del mercado.
+
+**Fase 2 — Suscripciones**
+El feed de alertas validado — 66.7% de accuracy global, 80.7% en zona óptima, edge estadísticamente significativo — es un producto de señal comercialmente viable para participantes activos en mercados de predicción.
+
+**Fase 3 — Licenciamiento institucional**
+Acceso al modelo ML entrenado o a la infraestructura completa para fondos cuantitativos interesados en señales de prediction markets como leading indicators de eventos macroeconómicos.
+
+La infraestructura actual opera con un coste fijo de ~$30/mes y está diseñada para escalar sin coste marginal relevante. La migración planificada a hardware propio eliminará prácticamente todos los costes variables.
+
+---
+
+## Por qué es diferente
+
+| Aspecto | Sentinel Alpha | Competidores |
+|---------|---------------|--------------|
+| Profundidad de análisis | 55+ señales en 6 categorías, trazabilidad on-chain de varios saltos | Filtros básicos de actividad de wallets |
+| Validación estadística | 2.447 outcomes verificados, Z = +4.7σ | Sin validación publicada |
+| Diseño para ML | 12 variables T0 frozen en cada alerta desde el primer día | Datos no estructurados para ML |
+| Coste operativo | ~$30/mes, migrando a coste mínimo con hardware propio | Modelos de suscripción |
+| Propiedad intelectual | Código privado, lógica no replicable públicamente | Herramientas abiertas o cerradas sin validación |
 
 ---
 
 ## Stack técnico
 
-**Python · PostgreSQL · GitHub Actions**
+**Python · PostgreSQL · GitHub Actions · Machine Learning** (en desarrollo)
 
 ---
 
