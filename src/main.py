@@ -852,6 +852,19 @@ def run_scan(
                         if (alert.star_level or 0) > existing_star:
                             update_fields["star_level"] = alert.star_level
 
+                    # Log score/star changes to history before writing
+                    _new_score = update_fields.get("score")
+                    _new_star  = update_fields.get("star_level")
+                    if _new_score is not None or _new_star is not None:
+                        db.log_score_history(
+                            alert_id=existing_id,
+                            old_star_level=existing_star,
+                            new_star_level=_new_star if _new_star is not None else existing_star,
+                            old_score=existing_score,
+                            new_score=_new_score if _new_score is not None else existing_score,
+                            change_reason="cross_scan_dedup",
+                        )
+
                     db.update_alert_fields(existing_id, update_fields)
                     alert.deduplicated = True
                     counters["alerts_cross_scan_dedup"] += 1

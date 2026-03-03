@@ -270,15 +270,34 @@ class SupabaseClient:
         self.client.table("alerts").update(update).eq("id", alert_id).execute()
 
     def update_alert_fields(self, alert_id: int, fields: dict) -> None:
-        """Update specific fields on an existing alert row.
-
-        # TODO(audit-trail): Before writing, snapshot old values and insert into
-        # alert_update_log(alert_id, changed_fields, old_values, new_values, ts).
-        # Deferred — implement when alert_update_log table is created in Supabase.
-        """
+        """Update specific fields on an existing alert row."""
         if not fields:
             return
         self.client.table("alerts").update(fields).eq("id", alert_id).execute()
+
+    def log_score_history(
+        self,
+        alert_id: int,
+        old_star_level: int | None,
+        new_star_level: int | None,
+        old_score: int | None,
+        new_score: int | None,
+        change_reason: str,
+    ) -> None:
+        """Insert a row into alert_score_history when score or star_level changes."""
+        try:
+            self.client.table("alert_score_history").insert({
+                "alert_id": alert_id,
+                "old_star_level": old_star_level,
+                "new_star_level": new_star_level,
+                "old_score": old_score,
+                "new_score": new_score,
+                "change_reason": change_reason,
+            }).execute()
+        except Exception as e:
+            logger.warning(
+                "Could not log score history for alert #%s: %s", alert_id, e
+            )
 
     def get_alerts_pending(self) -> list[dict]:
         """Get ALL alerts with outcome='pending'.
@@ -772,6 +791,14 @@ class SupabaseClient:
         }
         if new_score is not None:
             fields["score"] = new_score
+            self.log_score_history(
+                alert_id=alert_id,
+                old_star_level=alert.get("star_level"),
+                new_star_level=alert.get("star_level"),  # consolidation never changes star
+                old_score=alert.get("score"),
+                new_score=new_score,
+                change_reason="consolidation",
+            )
 
         self.client.table("alerts").update(fields).eq("id", alert_id).execute()
 
