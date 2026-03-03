@@ -7,3 +7,7 @@ __pycache__/
 .vscode/
 .DS_Store
 health_reports/
+
+# system_audit generated files
+system_audit/snapshots/*.json
+system_audit/master_summary.csv
