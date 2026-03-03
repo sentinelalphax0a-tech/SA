@@ -457,7 +457,8 @@ class WhaleMonitor:
         """Persist an additional buy as metadata on the alert.
 
         Increments additional_buys_count and additional_buys_amount.
-        Also updates total_amount in the wallet JSONB for the buying wallet.
+        Also tracks avg_additional_buy_price (weighted average by amount)
+        and last_additional_buy_price (most recent buy price).
         Stars and scoring are NEVER modified.
         """
         alert_id = alert.get("id")
@@ -476,6 +477,19 @@ class WhaleMonitor:
             "additional_buys_count": new_count,
             "additional_buys_amount": new_total_amount,
         }
+
+        # DCA price tracking
+        buy_price = event.get("buy_price")
+        new_avg: float | None = None
+        if buy_price is not None:
+            old_avg = alert.get("avg_additional_buy_price") or 0.0
+            new_avg = round(
+                (old_avg * current_amount + buy_price * new_amount)
+                / (current_amount + new_amount),
+                4,
+            )
+            fields["avg_additional_buy_price"] = new_avg
+            fields["last_additional_buy_price"] = round(buy_price, 4)
 
         # Update total_amount for this wallet inside the JSONB
         address = wallet.get("address", "")
@@ -498,6 +512,9 @@ class WhaleMonitor:
             # wallets in the same alert accumulate correctly within one cycle
             alert["additional_buys_count"] = new_count
             alert["additional_buys_amount"] = new_total_amount
+            if new_avg is not None:
+                alert["avg_additional_buy_price"] = new_avg
+                alert["last_additional_buy_price"] = round(buy_price, 4)
             if wallet_found:
                 alert["wallets"] = updated_wallets
         except Exception as e:
