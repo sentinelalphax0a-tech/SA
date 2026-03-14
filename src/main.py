@@ -70,10 +70,15 @@ def _group_trades_by_wallet(
 
 
 def _dominant_direction(trades: list[TradeEvent]) -> str:
-    """Determine the dominant direction by total amount."""
-    yes_total = sum(t.amount for t in trades if t.direction == "YES")
-    no_total = sum(t.amount for t in trades if t.direction == "NO")
-    return "YES" if yes_total >= no_total else "NO"
+    """Determine the dominant direction by total amount.
+
+    Works with any direction string — binary ("YES"/"NO") or categorical
+    (e.g. "$60k", "$80k") — so multi-outcome markets are handled correctly.
+    """
+    totals: dict[str, float] = {}
+    for t in trades:
+        totals[t.direction] = totals.get(t.direction, 0.0) + t.amount
+    return max(totals, key=totals.get) if totals else "YES"
 
 
 def _filter_wallets_by_direction(
@@ -86,9 +91,14 @@ def _filter_wallets_by_direction(
     Direction is determined by total amount among analyzed wallets.
     Returns (direction, filtered_wallets, filtered_filter_sets).
     """
-    yes_amt = sum(w["total_amount"] for w in wallets if w.get("direction") == "YES")
-    no_amt = sum(w["total_amount"] for w in wallets if w.get("direction") == "NO")
-    direction = "YES" if yes_amt >= no_amt else "NO"
+    # Determine dominant direction generically — works for binary ("YES"/"NO")
+    # and categorical markets (e.g. "$60k", "$80k").
+    totals: dict[str, float] = {}
+    for w in wallets:
+        d = w.get("direction")
+        if d:
+            totals[d] = totals.get(d, 0.0) + w.get("total_amount", 0.0)
+    direction = max(totals, key=totals.get) if totals else "YES"
 
     filtered = [
         (w, f) for w, f in zip(wallets, filter_sets)
@@ -110,7 +120,12 @@ def _compute_accumulation(
         return None
 
     direction = _dominant_direction(market_trades)
-    directional = [t for t in market_trades if t.direction == direction]
+    # Bug 2 fix: only include BUY-side trades (is_market_order=True).
+    # SELLs inflate total_amount and corrupt avg_entry_price.
+    directional = [
+        t for t in market_trades
+        if t.direction == direction and t.is_market_order
+    ]
     if not directional:
         return None
 

@@ -345,9 +345,18 @@ class PolymarketClient:
 
                 trade_dt = datetime.fromtimestamp(ts, tz=timezone.utc)
 
-                # Determine direction from outcome field
+                # Determine direction from outcome field.
+                # Binary markets: "Yes" → "YES", "No" → "NO".
+                # Categorical markets (e.g. "$60k", "$80k"): preserve the
+                # outcome string as direction so different outcomes are not
+                # collapsed into a single "NO" bucket (Bug ROOT fix).
                 outcome = t.get("outcome", "")
-                direction = "YES" if outcome == "Yes" else "NO"
+                if outcome in ("Yes", "YES"):
+                    direction = "YES"
+                elif outcome in ("No", "NO"):
+                    direction = "NO"
+                else:
+                    direction = outcome  # categorical: e.g. "$60k", "Candidate A"
 
                 trade = TradeEvent(
                     wallet_address=t.get("proxyWallet", ""),

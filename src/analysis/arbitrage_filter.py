@@ -200,10 +200,15 @@ class ArbitrageFilter:
 
 
 def _dominant_direction(trades: list[TradeEvent]) -> str:
-    """Return the dominant direction by total amount traded."""
-    yes_total = sum(t.amount for t in trades if t.direction == "YES")
-    no_total = sum(t.amount for t in trades if t.direction == "NO")
-    return "YES" if yes_total >= no_total else "NO"
+    """Return the dominant direction by total amount traded.
+
+    Works with any direction string — binary ("YES"/"NO") or categorical
+    (e.g. "$60k", "$80k") — so multi-outcome markets are handled correctly.
+    """
+    totals: dict[str, float] = {}
+    for t in trades:
+        totals[t.direction] = totals.get(t.direction, 0.0) + t.amount
+    return max(totals, key=totals.get) if totals else "YES"
 
 
 def tokenize(question: str) -> set[str]:

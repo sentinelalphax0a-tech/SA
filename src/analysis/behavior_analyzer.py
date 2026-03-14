@@ -175,18 +175,43 @@ class BehaviorAnalyzer:
     # ── Helpers ───────────────────────────────────────────────
 
     def _build_accumulation(self, trades: list[TradeEvent]) -> AccumulationWindow:
-        """Build an AccumulationWindow from a sorted list of trades."""
-        total = sum(t.amount for t in trades)
-        direction = trades[0].direction if trades else "YES"
+        """Build an AccumulationWindow from a wallet's BUY trades.
+
+        Only BUY-side trades (is_market_order=True) in the dominant direction
+        are counted.  Mirrors main._compute_accumulation semantics and prevents
+        inflation from mixed-direction or SELL-side trades (Bug 2 + Bug 3 fix).
+        Works with binary directions ("YES"/"NO") and categorical outcome strings.
+        """
+        # Only accumulate BUY-side trades (exclude position closures / SELLs)
+        buys = [t for t in trades if t.is_market_order]
+
+        if not buys:
+            # Fallback: caller passed only SELLs; use all trades so downstream
+            # code does not crash.  total_amount will be wrong but the window
+            # will likely be discarded (total < MIN_ACCUMULATED_AMOUNT).
+            buys = trades
+
+        # Dominant direction by total BUY amount — generic, not hardcoded YES/NO
+        totals: dict[str, float] = {}
+        for t in buys:
+            totals[t.direction] = totals.get(t.direction, 0.0) + t.amount
+        direction = max(totals, key=totals.get) if totals else (buys[0].direction if buys else "YES")
+
+        directional = [t for t in buys if t.direction == direction]
+        if not directional:
+            directional = buys  # safety fallback
+
+        total = sum(t.amount for t in directional)
+
         return AccumulationWindow(
-            wallet_address=trades[0].wallet_address,
-            market_id=trades[0].market_id,
+            wallet_address=directional[0].wallet_address,
+            market_id=directional[0].market_id,
             direction=direction,
             total_amount=total,
-            trade_count=len(trades),
-            first_trade=trades[0].timestamp,
-            last_trade=trades[-1].timestamp,
-            trades=trades,
+            trade_count=len(directional),
+            first_trade=directional[0].timestamp,
+            last_trade=directional[-1].timestamp,
+            trades=directional,
         )
 
     def _get_wallet(self, wallet_address: str) -> Wallet | None:
