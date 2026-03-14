@@ -1570,6 +1570,14 @@ def _analyze_wallet(
         logger.error("behavior_analyzer failed for %s: %s", wallet_address[:10], e)
     t_behavior = time.time() - t0
 
+    # ── Fetch real PM history once (used for N06 and distinct_markets) ────
+    pm_history: dict | None = None
+    if pm_client is not None:
+        try:
+            pm_history = pm_client.get_wallet_pm_history_cached(wallet_address)
+        except Exception as e:
+            logger.debug("PM history fetch failed for %s: %s", wallet_address[:10], e)
+
     # ── 4e-iii. Noise filter (N01, N02, N05, N06) ────────────
     t0 = time.time()
     try:
@@ -1580,13 +1588,11 @@ def _analyze_wallet(
             non_pm = wallet_data_db.get("non_pm_markets", 0)
 
         # Populate non_pm_markets from real PM history if DB has 0
-        if non_pm == 0 and pm_client is not None:
+        if non_pm == 0 and pm_history is not None and pm_history.get("market_ids"):
             try:
-                history = pm_client.get_wallet_pm_history_cached(wallet_address)
-                if history and history.get("market_ids"):
-                    non_pm = pm_client.count_non_political_markets(history["market_ids"])
+                non_pm = pm_client.count_non_political_markets(pm_history["market_ids"])
             except Exception as e:
-                logger.debug("N06 PM history check failed for %s: %s", wallet_address[:10], e)
+                logger.debug("N06 non-pm count failed for %s: %s", wallet_address[:10], e)
 
         wallet_obj = Wallet(address=wallet_address, non_pm_markets=non_pm)
 
@@ -1632,7 +1638,12 @@ def _analyze_wallet(
     # ── Build wallet data dict for alert ─────────────────────
     span_hours = (accum.last_trade - accum.first_trade).total_seconds() / 3600
     # Distinct markets this wallet traded in (for sniper/shotgun scoring)
-    distinct_markets = len({t.market_id for t in all_trades if t.wallet_address == wallet_address})
+    # Bug 4 fix: usar historial real del wallet. Fallback = 1 (sniper bonus,
+    # más conservador que penalizar wallets por falta de datos)
+    if pm_history is not None:
+        distinct_markets = pm_history.get("distinct_markets") or 1
+    else:
+        distinct_markets = 1
 
     # Individual trade details for detailed Telegram format
     # CLOB returns the price of the token bought (YES or NO), no conversion needed.
