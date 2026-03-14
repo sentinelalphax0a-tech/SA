@@ -375,8 +375,9 @@ class PolymarketClient:
     def get_wallet_pm_history(self, wallet_address: str) -> dict | None:
         """Check a wallet's real Polymarket trading history.
 
-        Queries the Data API for trades by this wallet (any market)
-        to determine if the wallet is actually new to Polymarket.
+        Uses the /activity?user= endpoint which correctly filters by wallet.
+        NOTE: /trades?maker= does NOT filter by wallet — it returns global
+        market activity regardless of the maker parameter.
 
         Returns:
             {"trade_count": int, "distinct_markets": int,
@@ -384,17 +385,17 @@ class PolymarketClient:
         """
         try:
             resp = self.session.get(
-                f"{DATA_API_BASE}/trades",
+                f"{DATA_API_BASE}/activity",
                 params={
-                    "maker": wallet_address,
+                    "user": wallet_address,
                     "limit": 100,
                 },
                 timeout=10,
             )
             resp.raise_for_status()
-            raw_trades = resp.json()
+            raw_activity = resp.json()
 
-            if not raw_trades:
+            if not raw_activity:
                 return {
                     "trade_count": 0,
                     "distinct_markets": 0,
@@ -402,14 +403,20 @@ class PolymarketClient:
                     "market_ids": [],
                 }
 
-            markets = {t.get("market") or t.get("conditionId") for t in raw_trades}
+            # Filter to TRADE events only (exclude REDEEM, MERGE, etc.)
+            raw_trades = [t for t in raw_activity if t.get("type", "TRADE") == "TRADE"]
+
+            markets = {t.get("conditionId") for t in raw_trades}
             markets.discard(None)
 
             total_volume = 0.0
             for t in raw_trades:
-                size = float(t.get("size", 0))
-                price = float(t.get("price", 0))
-                total_volume += size * price
+                # /activity provides usdcSize (USDC notional) directly
+                usdc = t.get("usdcSize")
+                if usdc is not None:
+                    total_volume += float(usdc)
+                else:
+                    total_volume += float(t.get("size", 0)) * float(t.get("price", 0))
 
             return {
                 "trade_count": len(raw_trades),
