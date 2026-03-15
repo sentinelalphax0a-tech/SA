@@ -95,9 +95,24 @@ class WhaleMonitor:
         market_id = alert.get("market_id", "")
         direction = (alert.get("direction") or "YES").upper()
 
+        # Bug 5 fix: dynamic lookback from alert creation date.
+        # The fixed 6 h window missed sells that occurred between monitor cycles
+        # (e.g. wallet sold 2 days ago but monitor last ran 2 days ago).
+        lookback = LOOKBACK_MINUTES
+        raw_created = alert.get("created_at")
+        if raw_created:
+            try:
+                anchor = dt_parser.parse(raw_created) if isinstance(raw_created, str) else raw_created
+                if anchor.tzinfo is None:
+                    anchor = anchor.replace(tzinfo=timezone.utc)
+                elapsed = int((datetime.now(timezone.utc) - anchor).total_seconds() / 60) + 60
+                lookback = min(max(LOOKBACK_MINUTES, elapsed), 43_200)  # cap 30 days
+            except Exception:
+                pass
+
         trades = self.pm.get_recent_trades(
             market_id=market_id,
-            minutes=LOOKBACK_MINUTES,
+            minutes=lookback,
         )
 
         wallet_trades = [t for t in trades if t.wallet_address == address]

@@ -25,8 +25,13 @@ import os
 from collections import defaultdict
 from datetime import datetime, timedelta, timezone
 
+from dateutil import parser as dt_parser
+
 from src import config
 from src.database.models import TradeEvent
+
+# Cap extended lookbacks at 30 days (43 200 min) to avoid unbounded API calls.
+_MAX_LOOKBACK_MINUTES = 43_200
 
 logger = logging.getLogger(__name__)
 
@@ -82,11 +87,29 @@ class SellDetector:
         if self.pm is None:
             return []
 
+        # Bug 5a fix: dynamic lookback from the oldest open position.
+        # The fixed 35-min window only caught sells in the current scan cycle;
+        # positions opened earlier had zero coverage between scans.
+        now = datetime.now(timezone.utc)
+        lookback = config.SCAN_LOOKBACK_MINUTES
+        for pos in positions:
+            raw_ts = pos.get("created_at")
+            if raw_ts:
+                try:
+                    anchor = dt_parser.parse(raw_ts) if isinstance(raw_ts, str) else raw_ts
+                    if anchor.tzinfo is None:
+                        anchor = anchor.replace(tzinfo=timezone.utc)
+                    elapsed = int((now - anchor).total_seconds() / 60) + 60  # +1 h buffer
+                    lookback = max(lookback, elapsed)
+                except Exception:
+                    pass
+        lookback = min(lookback, _MAX_LOOKBACK_MINUTES)
+
         # Fetch recent trades for this market
         try:
             trades = self.pm.get_recent_trades(
                 market_id=market_id,
-                minutes=config.SCAN_LOOKBACK_MINUTES,
+                minutes=lookback,
                 min_amount=config.MIN_TX_AMOUNT,
             )
         except Exception as e:
@@ -265,10 +288,29 @@ class SellDetector:
         events: list[dict] = []
 
         for market_id, positions in by_market.items():
+            # Bug 5a fix (net-position path): same dynamic lookback.
+            # For positions older than the base 48 h window the trade fetch
+            # was returning empty results, causing _check_net_position() to
+            # bail out with buys_shares=0 → return None → position never closed.
+            market_lookback = lback
+            now_local = datetime.now(timezone.utc)
+            for pos in positions:
+                raw_ts = pos.get("created_at")
+                if raw_ts:
+                    try:
+                        anchor = dt_parser.parse(raw_ts) if isinstance(raw_ts, str) else raw_ts
+                        if anchor.tzinfo is None:
+                            anchor = anchor.replace(tzinfo=timezone.utc)
+                        elapsed = int((now_local - anchor).total_seconds() / 60) + 60
+                        market_lookback = max(market_lookback, elapsed)
+                    except Exception:
+                        pass
+            market_lookback = min(market_lookback, _MAX_LOOKBACK_MINUTES)
+
             try:
                 trades = self.pm.get_recent_trades(
                     market_id=market_id,
-                    minutes=lback,
+                    minutes=market_lookback,
                     min_amount=0,  # include dust for net position accuracy
                 )
             except Exception as e:
@@ -329,7 +371,20 @@ class SellDetector:
         opp_buy_shares = sum(t.amount / t.price for t in opp_buys  if t.price > 0)
 
         if buys_shares <= 0:
-            return None  # no buys in window — can't assess
+            # Bug 5b fix: buys are outside the (now-dynamic) lookback window,
+            # or the market had no BUY-side trades visible in the API window.
+            # Estimate from the position's stored entry data:
+            #   shares ≈ total_amount_usdc / entry_price_per_share
+            # This lets us still detect a net exit even for old positions.
+            if entry_odds > 0 and original_amount > 0:
+                buys_shares = original_amount / entry_odds
+                logger.debug(
+                    "Net position: no buys in window for %s — using stored estimate "
+                    "%.0f shares (amount=%.0f entry_odds=%.3f)",
+                    wallet_addr[:10], buys_shares, original_amount, entry_odds,
+                )
+            else:
+                return None  # can't assess without any buy basis
 
         # Conservative merge proxy: if wallet bought opposite tokens,
         # min(buys, opp_buys) shares are likely neutralized via CTF merge
