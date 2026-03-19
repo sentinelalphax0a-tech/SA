@@ -646,6 +646,8 @@ MARKET_BLACKLIST_TERMS: list[str] = [
     "over/under", "above or below",
     # Counting/metrics markets
     "how many", "number of", "count of",
+    # Post-counting markets (Andrew Tate / Trump Truth Social post counts)
+    "posts from", "truth social post", "truth social posts", "of tweets",
     # Crypto price speculation (low-liquidity, easy to dominate, not insider trading)
     "will bitcoin reach", "will bitcoin dip",
     "will ethereum reach", "will ethereum dip",
