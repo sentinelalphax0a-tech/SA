@@ -30,6 +30,11 @@ logger = logging.getLogger(__name__)
 # Hard cap on final score to prevent runaway values
 SCORE_CAP = 400
 
+# B07 contrarian penalty for low-star alerts (≤3★).
+# B07 correct rate is 28-51% at 0-3★ (anti-signal) vs 70-78% at 4-5★ (real signal).
+# At low star levels, replace B07's +20 with this penalty in score recalculation.
+B07_LOW_STAR_PENALTY: int = -15
+
 
 def calculate_score(
     filters_triggered: list[FilterResult],
@@ -75,6 +80,12 @@ def calculate_score(
 
     # 8. Star cap for obvious bets (N09)
     star_level = _apply_obvious_bet_cap(star_level, filters)
+
+    # 9. B07 low-star penalty: penalize B07 at ≤3★, preserve at 4-5★
+    star_level, score_final = _apply_b07_low_star_penalty(
+        star_level, score_final, filters,
+        total_amount, wallet_market_count,
+    )
 
     return ScoringResult(
         score_raw=score_raw,
@@ -231,3 +242,66 @@ def _apply_obvious_bet_cap(
     if "N09c" in filter_ids:
         return min(star_level, config.OBVIOUS_BET_STAR_CAP_MODERATE)
     return star_level
+
+
+def _apply_b07_low_star_penalty(
+    star_level: int,
+    score_final: int,
+    filters: list[FilterResult],
+    total_amount: float,
+    wallet_market_count: int | None,
+) -> tuple[int, int]:
+    """Penalize B07 at ≤3★, preserve at 4-5★.
+
+    B07 (contrarian buy at odds < 0.20) correct rate by star level:
+        0★=28%, 1★=42%, 2★=52%, 3★=43%  → anti-signal
+        4★=70%, 5★=78%                   → real signal
+
+    At low star levels, a wallet buying at extreme odds without enough
+    corroborating signals is noise/degen behavior. At 4-5★, the wallet
+    has strong W/O/C/M filters and B07 indicates genuine conviction.
+
+    Mechanism: if preliminary star ≤3 and B07 present, recalculate
+    score_final using B07 = B07_LOW_STAR_PENALTY instead of +20pts,
+    then re-derive star_level from the adjusted score. If star ≥4: no change.
+
+    Returns (adjusted_star_level, adjusted_score_final).
+    """
+    if star_level >= 4:
+        return star_level, score_final
+
+    b07_filter = None
+    for f in filters:
+        if f.filter_id == "B07":
+            b07_filter = f
+            break
+
+    if b07_filter is None or b07_filter.points <= 0:
+        return star_level, score_final
+
+    # Recalculate raw score with B07 = B07_LOW_STAR_PENALTY instead of +20
+    adjusted_raw = max(0, sum(
+        f.points if f.filter_id != "B07" else B07_LOW_STAR_PENALTY
+        for f in filters
+    ))
+
+    # Reapply multipliers (same logic as main calculate_score)
+    multiplier = _get_amount_multiplier(total_amount)
+    diversity_mult = _get_diversity_multiplier(wallet_market_count)
+    multiplier = round(multiplier * diversity_mult, 2)
+
+    adjusted_final = min(SCORE_CAP, round(adjusted_raw * multiplier))
+
+    # Re-derive star level
+    adjusted_star = _score_to_stars(adjusted_final)
+
+    # Re-validate stars (use categories WITHOUT B07 since it's now negative)
+    categories = _get_categories(
+        [f for f in filters if f.filter_id != "B07"]
+    )
+    adjusted_star = _validate_stars(
+        adjusted_star, categories, total_amount, filters,
+    )
+    adjusted_star = _apply_obvious_bet_cap(adjusted_star, filters)
+
+    return adjusted_star, adjusted_final

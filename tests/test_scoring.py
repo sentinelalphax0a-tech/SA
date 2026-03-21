@@ -10,6 +10,7 @@ from src.analysis.scoring import (
     _get_diversity_multiplier,
     _score_to_stars,
     _validate_stars,
+    _apply_b07_low_star_penalty,
 )
 from src.database.models import FilterResult
 from src import config
@@ -387,3 +388,80 @@ class TestStarsUseFinalScore:
             f"Star {result.star_level} should be >=4 "
             f"(final={result.score_final} >= 150 threshold)"
         )
+
+
+# ── B07 low-star penalty ──────────────────────────────────
+
+
+class TestB07LowStarPenalty:
+    """B07 penalized (-15) at ≤3★, preserved (+20) at 4-5★."""
+
+    def test_b07_penalized_at_low_star(self):
+        """Alert at ≤3★ with B07: score recalculated with B07=-15."""
+        filters = [
+            FilterResult(filter_id="W01", filter_name="Wallet muy nueva", points=25, category="wallet"),
+            FilterResult(filter_id="B07", filter_name="Compra contra mercado", points=20, category="behavior"),
+            FilterResult(filter_id="B18b", filter_name="Acumulación significativa", points=25, category="behavior"),
+            FilterResult(filter_id="O01", filter_name="Origen exchange", points=5, category="origin"),
+        ]
+        result_with = calculate_score(filters, total_amount=2000)
+
+        filters_adjusted = [
+            FilterResult(filter_id="W01", filter_name="Wallet muy nueva", points=25, category="wallet"),
+            FilterResult(filter_id="B07", filter_name="Compra contra mercado", points=-15, category="behavior"),
+            FilterResult(filter_id="B18b", filter_name="Acumulación significativa", points=25, category="behavior"),
+            FilterResult(filter_id="O01", filter_name="Origen exchange", points=5, category="origin"),
+        ]
+        result_manual = calculate_score(filters_adjusted, total_amount=2000)
+
+        assert result_with.star_level == result_manual.star_level
+        assert result_with.star_level <= 3
+
+    def test_b07_preserved_at_4_star(self):
+        """Alert at 4★+ with B07: B07's +20 contribution preserved."""
+        filters = [
+            FilterResult(filter_id="W01", filter_name="", points=25, category="wallet"),
+            FilterResult(filter_id="B07", filter_name="", points=20, category="behavior"),
+            FilterResult(filter_id="B18d", filter_name="", points=50, category="behavior"),
+            FilterResult(filter_id="C02", filter_name="", points=15, category="confluence"),
+            FilterResult(filter_id="O01", filter_name="", points=5, category="origin"),
+            FilterResult(filter_id="M02", filter_name="", points=20, category="market"),
+        ]
+        result = calculate_score(filters, total_amount=15000)
+
+        assert result.star_level >= 4
+
+        result_without = calculate_score(
+            [f for f in filters if f.filter_id != "B07"],
+            total_amount=15000,
+        )
+        assert result.score_final > result_without.score_final
+
+    def test_b07_absent_no_change(self):
+        """Alert without B07: no adjustment made."""
+        filters = [
+            FilterResult(filter_id="W01", filter_name="", points=25, category="wallet"),
+            FilterResult(filter_id="B18b", filter_name="", points=25, category="behavior"),
+        ]
+        result = calculate_score(filters, total_amount=1000)
+        assert result.star_level >= 0
+        assert result.score_final >= 0
+
+    def test_b07_already_negative_no_change(self):
+        """If B07 has points <= 0, no double penalty applied."""
+        filters = [
+            FilterResult(filter_id="W01", filter_name="", points=25, category="wallet"),
+            FilterResult(filter_id="B07", filter_name="", points=-5, category="behavior"),
+        ]
+        star, score = _apply_b07_low_star_penalty(2, 50, filters, 1000, None)
+        assert star == 2
+        assert score == 50
+
+    def test_b07_pushes_1star_to_0star(self):
+        """B07 penalty can push a 1★ alert down to 0★ (not published)."""
+        filters = [
+            FilterResult(filter_id="W03", filter_name="", points=15, category="wallet"),
+            FilterResult(filter_id="B07", filter_name="", points=20, category="behavior"),
+        ]
+        result = calculate_score(filters, total_amount=500)
+        assert result.star_level == 0

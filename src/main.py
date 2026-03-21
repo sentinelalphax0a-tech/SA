@@ -231,7 +231,7 @@ def _build_alert(
         market_liquidity_at_alert=market.liquidity,
         hours_to_deadline=hours_to_deadline,
         wallets_count_initial=len(wallet_data),
-        scoring_version="v2",
+        scoring_version="v2.1",
     )
 
 
