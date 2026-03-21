@@ -12,3 +12,6 @@ health_reports/
 system_audit/snapshots/*.json
 system_audit/master_summary.csv
 system_audit/bayesian/*.json
+
+# Dashboard HTML — generated, published directly to sentinel-dashboard repo
+docs/index.html
