@@ -208,12 +208,33 @@ class WalletAnalyzer:
         except Exception as e:
             logger.debug("Funding DB cache lookup failed for %s: %s", wallet_address[:10], e)
 
-        # Cache miss or stale — fetch from Alchemy
+        # Cache miss or stale — build a DB lookup callback so the BFS can
+        # consult Supabase for intermediate hops (2+) before calling Alchemy.
+        def _db_lookup(addr: str) -> list[WalletFunding] | None:
+            try:
+                rows = self.db.get_funding_sources(addr)
+                if not rows:
+                    return None
+                most_recent = max(
+                    (_parse_dt(r["created_at"]) for r in rows if r.get("created_at")),
+                    default=None,
+                )
+                if most_recent is None:
+                    return None
+                age_days = (datetime.now(timezone.utc) - most_recent).days
+                if age_days < _FUNDING_CACHE_TTL_DAYS:
+                    return _db_rows_to_wallet_funding(rows)
+                return None  # stale
+            except Exception:
+                return None
+
         logger.info(
             "Funding cache MISS for %s — fetching from Alchemy",
             wallet_address[:10],
         )
-        funding = self.chain.get_funding_sources(wallet_address, max_hops=self.max_hops)
+        funding = self.chain.get_funding_sources(
+            wallet_address, max_hops=self.max_hops, db_funding_lookup=_db_lookup,
+        )
         if funding:
             try:
                 self.db.insert_funding_batch(funding)

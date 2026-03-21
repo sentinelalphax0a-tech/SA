@@ -320,9 +320,21 @@ class BlockchainClient:
         return result
 
     def get_funding_sources(
-        self, address: str, max_hops: int = 2
+        self,
+        address: str,
+        max_hops: int = 2,
+        db_funding_lookup: Callable[[str], "list[WalletFunding] | None"] | None = None,
     ) -> list[WalletFunding]:
-        """Trace funding sources up to N hops back via BFS."""
+        """Trace funding sources up to N hops back via BFS.
+
+        Args:
+            address: Starting wallet address.
+            max_hops: Maximum BFS depth.
+            db_funding_lookup: Optional cache callback. Receives an address and
+                returns a list of fresh WalletFunding rows if available, or None
+                on a cache miss. When provided, each BFS node is checked before
+                calling Alchemy — a cache hit skips the Alchemy call for that hop.
+        """
         if not Web3.is_address(address):
             logger.warning("Invalid address: %s", address)
             return []
@@ -342,6 +354,22 @@ class BlockchainClient:
                 continue
             visited.add(current_addr)
 
+            # ── DB cache check (skip Alchemy if fresh data exists) ────────────
+            if db_funding_lookup is not None:
+                cached = db_funding_lookup(current_addr)
+                if cached:
+                    logger.debug(
+                        "BFS hop %d: DB cache hit for %s (%d rows) — skipping Alchemy",
+                        hop, current_addr[:10], len(cached),
+                    )
+                    results.extend(cached)
+                    for f in cached:
+                        sender = f.sender_address.lower()
+                        if not f.is_exchange and hop < max_hops and sender not in visited:
+                            queue.append((sender, hop + 1))
+                    continue  # skip Alchemy for this hop
+
+            # ── Alchemy fetch ─────────────────────────────────────────────────
             try:
                 time.sleep(API_DELAY)
                 transfers = self._fetch_transfers(

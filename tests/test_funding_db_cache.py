@@ -136,9 +136,10 @@ class TestFundingDbCacheMiss:
 
     def test_chain_called_on_miss(self):
         self.az._get_funding_with_db_cache("0xAAA")
-        self.az.chain.get_funding_sources.assert_called_once_with(
-            "0xAAA", max_hops=self.az.max_hops
-        )
+        self.az.chain.get_funding_sources.assert_called_once()
+        call_kwargs = self.az.chain.get_funding_sources.call_args.kwargs
+        assert call_kwargs.get("max_hops") == self.az.max_hops
+        assert callable(call_kwargs.get("db_funding_lookup"))
 
     def test_result_persisted_to_db(self):
         self.az._get_funding_with_db_cache("0xAAA")
@@ -330,3 +331,217 @@ class TestAnalyzeFundingCacheIntegration:
         # get_funding_sources should not be called at all (DB or chain)
         az.db.get_funding_sources.assert_not_called()
         az.chain.get_funding_sources.assert_not_called()
+
+
+# ── OPT-A: BFS db_funding_lookup callback (blockchain_client) ─────────────
+
+class TestBFSDbFundingLookup:
+    """
+    Verify that BlockchainClient.get_funding_sources() respects db_funding_lookup:
+      1. Cache hit → _fetch_transfers NOT called for that address
+      2. Cache miss → _fetch_transfers IS called
+      3. Results are equivalent with/without cache
+    """
+
+    def _make_client(self) -> "BlockchainClient":
+        from src.scanner.blockchain_client import BlockchainClient
+        from unittest.mock import patch, MagicMock
+        with patch("src.scanner.blockchain_client.Web3") as mock_w3:
+            mock_w3.is_address.return_value = True
+            mock_w3.return_value.is_connected.return_value = True
+            client = BlockchainClient.__new__(BlockchainClient)
+            client._age_cache = {}
+            client._first_pm_cache = {}
+            client._balance_cache = {}
+            client._funding_cache = {}
+            client._calls_ok = 0
+            client._rl_hits = 0
+            client._calls_failed = 0
+        return client
+
+    def _make_funding(self, wallet: str, sender: str, hop: int = 1) -> "WalletFunding":
+        return WalletFunding(
+            wallet_address=wallet.lower(),
+            sender_address=sender.lower(),
+            amount=500.0,
+            hop_level=hop,
+            is_exchange=False,
+        )
+
+    def test_cache_hit_skips_fetch_transfers(self):
+        """When db_funding_lookup returns data for every BFS node, _fetch_transfers is NOT called."""
+        from unittest.mock import MagicMock, patch
+        client = self._make_client()
+
+        # max_hops=1 → sender of hop-1 is NOT enqueued for hop-2 (hop < max_hops fails)
+        # So only "0xabc" is processed and it hits the cache → _fetch_transfers never called.
+        hop1_data = [self._make_funding("0xabc", "0xsender1", hop=1)]
+
+        def lookup(addr: str):
+            if addr == "0xabc":
+                return hop1_data
+            return None
+
+        with patch.object(client, "_fetch_transfers") as mock_fetch:
+            with patch("src.scanner.blockchain_client.Web3") as mock_w3:
+                mock_w3.is_address.return_value = True
+                result = client.get_funding_sources(
+                    "0xabc", max_hops=1, db_funding_lookup=lookup
+                )
+
+        mock_fetch.assert_not_called()
+        assert len(result) == 1
+        assert result[0].sender_address == "0xsender1"
+
+    def test_cache_miss_calls_fetch_transfers(self):
+        """When db_funding_lookup returns None, _fetch_transfers IS called."""
+        from unittest.mock import MagicMock, patch
+        import time as _time
+        client = self._make_client()
+
+        def lookup(addr: str):
+            return None  # always miss
+
+        with patch.object(client, "_fetch_transfers", return_value=[]) as mock_fetch:
+            with patch("src.scanner.blockchain_client.Web3") as mock_w3:
+                mock_w3.is_address.return_value = True
+                with patch("src.scanner.blockchain_client.time") as mock_time:
+                    client.get_funding_sources(
+                        "0xabc", max_hops=1, db_funding_lookup=lookup
+                    )
+
+        mock_fetch.assert_called_once()
+
+    def test_no_lookup_still_calls_fetch_transfers(self):
+        """Without db_funding_lookup, _fetch_transfers is called as before."""
+        from unittest.mock import patch
+        client = self._make_client()
+
+        with patch.object(client, "_fetch_transfers", return_value=[]) as mock_fetch:
+            with patch("src.scanner.blockchain_client.Web3") as mock_w3:
+                mock_w3.is_address.return_value = True
+                with patch("src.scanner.blockchain_client.time"):
+                    client.get_funding_sources("0xabc", max_hops=1)
+
+        mock_fetch.assert_called_once()
+
+    def test_cache_hit_enqueues_non_exchange_senders(self):
+        """BFS continues to hop 2 for non-exchange senders found via cache."""
+        from unittest.mock import patch
+        client = self._make_client()
+
+        hop1_data = [self._make_funding("0xabc", "0xintermediate", hop=1)]
+        hop2_data = [self._make_funding("0xintermediate", "0xroot", hop=2)]
+
+        def lookup(addr: str):
+            if addr == "0xabc":
+                return hop1_data
+            if addr == "0xintermediate":
+                return hop2_data
+            return None
+
+        with patch.object(client, "_fetch_transfers", return_value=[]) as mock_fetch:
+            with patch("src.scanner.blockchain_client.Web3") as mock_w3:
+                mock_w3.is_address.return_value = True
+                result = client.get_funding_sources(
+                    "0xabc", max_hops=2, db_funding_lookup=lookup
+                )
+
+        mock_fetch.assert_not_called()
+        senders = {f.sender_address for f in result}
+        assert "0xintermediate" in senders
+        assert "0xroot" in senders
+
+    def test_exchange_sender_not_enqueued(self):
+        """Exchange senders found via cache do NOT trigger further BFS hops."""
+        from unittest.mock import patch
+        client = self._make_client()
+
+        exchange_funding = [WalletFunding(
+            wallet_address="0xabc",
+            sender_address="0xbinance",
+            amount=1000.0,
+            hop_level=1,
+            is_exchange=True,
+            exchange_name="Binance",
+        )]
+
+        calls: list[str] = []
+
+        def lookup(addr: str):
+            calls.append(addr)
+            if addr == "0xabc":
+                return exchange_funding
+            return None
+
+        with patch.object(client, "_fetch_transfers", return_value=[]):
+            with patch("src.scanner.blockchain_client.Web3") as mock_w3:
+                mock_w3.is_address.return_value = True
+                client.get_funding_sources("0xabc", max_hops=2, db_funding_lookup=lookup)
+
+        # Exchange sender (0xbinance) should NOT be added to the BFS queue
+        assert "0xbinance" not in calls
+
+
+# ── OPT-A: wallet_analyzer passes db_funding_lookup to chain ──────────────
+
+class TestWalletAnalyzerPassesDbLookup:
+    """Verify _get_funding_with_db_cache passes db_funding_lookup to chain on miss."""
+
+    def test_db_lookup_passed_on_cache_miss(self):
+        """On cache miss, chain.get_funding_sources receives a callable db_funding_lookup."""
+        az = _make_analyzer()
+        az.db.get_funding_sources.return_value = []  # miss
+        az.chain.get_funding_sources.return_value = []
+
+        az._get_funding_with_db_cache("0xAAA")
+
+        call_kwargs = az.chain.get_funding_sources.call_args.kwargs
+        assert "db_funding_lookup" in call_kwargs
+        assert callable(call_kwargs["db_funding_lookup"])
+
+    def test_db_lookup_callback_returns_none_on_empty(self):
+        """The callback returns None when DB has no rows for an address."""
+        az = _make_analyzer()
+        az.db.get_funding_sources.return_value = []  # miss
+        az.chain.get_funding_sources.return_value = []
+
+        az._get_funding_with_db_cache("0xAAA")
+
+        callback = az.chain.get_funding_sources.call_args.kwargs["db_funding_lookup"]
+        az.db.get_funding_sources.return_value = []  # still empty for intermediate addr
+        result = callback("0xintermediate")
+        assert result is None
+
+    def test_db_lookup_callback_returns_funding_on_fresh_hit(self):
+        """The callback returns WalletFunding list when DB has fresh rows."""
+        az = _make_analyzer()
+        az.db.get_funding_sources.return_value = []  # initial miss for root
+        az.chain.get_funding_sources.return_value = []
+
+        az._get_funding_with_db_cache("0xAAA")
+
+        callback = az.chain.get_funding_sources.call_args.kwargs["db_funding_lookup"]
+        # Now simulate fresh DB data for an intermediate address
+        az.db.get_funding_sources.return_value = [_fresh_db_row(
+            wallet="0xintermediate", sender="0xroot", age_days=1
+        )]
+        result = callback("0xintermediate")
+        assert result is not None
+        assert len(result) == 1
+        assert result[0].sender_address == "0xroot"
+
+    def test_db_lookup_callback_returns_none_on_stale(self):
+        """The callback returns None when DB data is stale."""
+        az = _make_analyzer()
+        az.db.get_funding_sources.return_value = []
+        az.chain.get_funding_sources.return_value = []
+
+        az._get_funding_with_db_cache("0xAAA")
+
+        callback = az.chain.get_funding_sources.call_args.kwargs["db_funding_lookup"]
+        az.db.get_funding_sources.return_value = [_stale_db_row(
+            wallet="0xintermediate", sender="0xroot"
+        )]
+        result = callback("0xintermediate")
+        assert result is None
