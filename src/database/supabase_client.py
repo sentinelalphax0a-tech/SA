@@ -73,7 +73,7 @@ class SupabaseClient:
             self.client.table("system_config")
             .select("value")
             .eq("key", key)
-            .single()
+            .maybe_single()
             .execute()
         )
         return resp.data["value"] if resp.data else None
@@ -101,7 +101,7 @@ class SupabaseClient:
             self.client.table("wallets")
             .select("*")
             .eq("address", address)
-            .single()
+            .maybe_single()
             .execute()
         )
         return resp.data
@@ -249,7 +249,7 @@ class SupabaseClient:
             self.client.table("alerts")
             .select("*")
             .eq("id", alert_id)
-            .single()
+            .maybe_single()
             .execute()
         )
         return resp.data

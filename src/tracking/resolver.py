@@ -65,11 +65,10 @@ class MarketResolver:
                 if not outcome:
                     continue
                 if outcome not in ("YES", "NO"):
-                    logger.info(
-                        "Market %s has non-standard outcome '%s' — skipping resolution",
+                    logger.warning(
+                        "Market %s has non-standard outcome '%s' — resolving as-is",
                         mid, outcome,
                     )
-                    continue
 
                 resolved_markets[mid] = outcome
 
@@ -141,8 +140,13 @@ class MarketResolver:
         direction = (alert.get("direction") or "YES").upper()
         outcome_upper = market_outcome.upper()
 
-        # a/b/c. Compare direction with market outcome
-        is_correct = direction == outcome_upper
+        # a/b/c. Compare direction with market outcome.
+        # For categorical directions (not YES/NO), the CLOB sub-market resolves
+        # YES if that category won, NO if it lost.
+        if direction not in ("YES", "NO"):
+            is_correct = outcome_upper == "YES"
+        else:
+            is_correct = direction == outcome_upper
         alert_outcome = "correct" if is_correct else "incorrect"
 
         # d. Calculate actual_return (direction-adjusted)

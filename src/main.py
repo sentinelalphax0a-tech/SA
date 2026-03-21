@@ -14,9 +14,12 @@ Executable as: python -m src.main
 import asyncio
 import logging
 import time
+import uuid
 from collections import defaultdict
 from dataclasses import asdict
 from datetime import datetime, timedelta, timezone
+
+from dateutil import parser as dt_parser
 
 from src import config
 from src.database.models import (
@@ -1100,8 +1103,6 @@ def _backfill_hold_durations(db: SupabaseClient) -> int:
         logger.debug("_backfill_hold_durations: nothing to backfill")
         return 0
 
-    from dateutil import parser as dt_parser
-
     updated = 0
     for row in rows:
         try:
@@ -1154,8 +1155,7 @@ def _reconcile_sell_totals(db: SupabaseClient) -> int:
         return 0
 
     # Aggregate sell_pct per alert_id
-    from collections import defaultdict as _dd
-    sums: dict[int, float] = _dd(float)
+    sums: dict[int, float] = defaultdict(float)
     for ev in events:
         aid = ev.get("alert_id")
         pct = ev.get("sell_pct") or 0.0
@@ -1348,7 +1348,6 @@ def _process_market(
 
     # ── 5b. Group wallets & detect confluence per group ─────
     # `direction` was already set in step 4f (from analyzed wallets).
-    import uuid as _uuid
 
     wallets_for_confluence = [
         {"address": w["address"], "direction": w.get("direction", direction)}
@@ -1369,7 +1368,7 @@ def _process_market(
                 if not existing:
                     try:
                         funding = chain_client.get_funding_sources(
-                            addr, max_hops=profile.get("max_funding_hops", config.MAX_FUNDING_HOPS)
+                            addr, max_hops=config.SCAN_PROFILES[mode].get("max_funding_hops", config.MAX_FUNDING_HOPS)
                         )
                         if funding:
                             db.insert_funding_batch(funding)
@@ -1393,7 +1392,7 @@ def _process_market(
         wallet_lookup[wd["address"]] = (wd, wf)
 
     # ── 5c. Score each group independently ────────────────────
-    alert_group_id = str(_uuid.uuid4())
+    alert_group_id = str(uuid.uuid4())
     alert_candidates: list[tuple[Alert, bool, int]] = []  # (alert, is_whale, score)
 
     for group_wallets, confluence_filters in groups_with_filters:
