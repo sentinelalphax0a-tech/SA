@@ -81,10 +81,6 @@ class BehaviorAnalyzer:
         all_trades: list[TradeEvent] | None = None,
         resolution_date: datetime | None = None,
     ) -> list[FilterResult]:
-        # NOTE: `trades` (wallet_trades) already contains both YES and NO trades
-        # for this wallet because get_recent_trades() fetches the full market and
-        # _group_trades_by_wallet() groups without direction filtering.
-        # Merge check uses this mixed list directly — zero extra API calls.
         """Run all B and N filters for a wallet's trades in a specific market.
 
         Args:
@@ -109,42 +105,48 @@ class BehaviorAnalyzer:
 
         relevant.sort(key=lambda t: t.timestamp)
 
-        # ── N12 — Merge detection (run first, before accumulation filters) ──
-        # Must run before _build_accumulation so merge signal is captured even
-        # if the accumulation total would be inflated by mixed-direction trades.
+        # ── N12 — Merge detection (needs BOTH directions) ────────
         results_pre: list[FilterResult] = self._check_merge(relevant)
-        if results_pre:
-            # Return early only with N12 — all other filters still run below
-            pass  # merge result appended to final results after
 
-        # Build accumulation window from trades
-        accum = self._build_accumulation(relevant)
+        # ── Direction filtering ──────────────────────────────────
+        # All subsequent checks must use only the dominant direction.
+        # Mixing YES and NO inflates amounts, distorts avg_price,
+        # and corrupts price_move calculations.
+        yes_amt = sum(t.amount for t in relevant if t.direction == "YES")
+        no_amt = sum(t.amount for t in relevant if t.direction == "NO")
+        direction = "YES" if yes_amt >= no_amt else "NO"
+        directional = [t for t in relevant if t.direction == direction]
+        if not directional:
+            return list(results_pre)
 
-        # Calculate odds move (first trade price → current price)
+        # Build accumulation window from directional trades only
+        accum = self._build_accumulation(directional)
+
+        # Calculate odds move (first directional trade price → current price)
         odds_move = None
-        if current_odds is not None and relevant:
-            odds_move = current_odds - relevant[0].price
+        if current_odds is not None and directional:
+            odds_move = current_odds - directional[0].price
 
         # Fetch wallet from DB for B20
         wallet = self._get_wallet(wallet_address)
 
         results: list[FilterResult] = []
         results.extend(results_pre)  # N12 merge (if detected)
-        results.extend(self._check_drip(relevant))
-        results.extend(self._check_market_orders(relevant))
-        results.extend(self._check_increasing_size(relevant))
-        results.extend(self._check_against_market(relevant))
-        results.extend(self._check_rapid_accumulation(relevant))
-        results.extend(self._check_low_hours(relevant))
+        results.extend(self._check_drip(directional))
+        results.extend(self._check_market_orders(directional))
+        results.extend(self._check_increasing_size(directional))
+        results.extend(self._check_against_market(directional))
+        results.extend(self._check_rapid_accumulation(directional))
+        results.extend(self._check_low_hours(directional))
 
         # Ordered: B18 → B19 → B14 (B14 suppressed if B19 fired)
         results.extend(self._check_accumulation_tiers(accum, odds_move))
 
-        b19_results = self._check_whale_entry(relevant)
+        b19_results = self._check_whale_entry(directional)
         results.extend(b19_results)
 
         results.extend(self._check_first_big_buy(
-            relevant, b19_fired=len(b19_results) > 0,
+            directional, b19_fired=len(b19_results) > 0,
         ))
 
         # B28 (all-in) evaluated first; if it fires, B23 is suppressed
@@ -154,17 +156,17 @@ class BehaviorAnalyzer:
             results.extend(self._check_position_sizing(accum, wallet_balance))
 
         # B25 (odds conviction) and N09 (obvious bet) are mutually exclusive
-        b25_results = self._check_odds_conviction(relevant)
+        b25_results = self._check_odds_conviction(directional)
         results.extend(b25_results)
         if not b25_results:
-            results.extend(self._check_obvious_bet(relevant, current_odds))
+            results.extend(self._check_obvious_bet(directional, current_odds))
 
-        results.extend(self._check_stealth_accumulation(relevant))
+        results.extend(self._check_stealth_accumulation(directional))
         results.extend(self._check_diamond_hands(
-            wallet_address, market_id, relevant, current_odds,
+            wallet_address, market_id, directional, current_odds,
         ))
         results.extend(self._check_first_mover(
-            wallet_address, market_id, relevant, all_trades,
+            wallet_address, market_id, directional, all_trades,
         ))
         results.extend(self._check_long_horizon(resolution_date))
         if wallet is not None:

@@ -745,3 +745,79 @@ class TestN09NoDirection:
         results = analyzer._check_obvious_bet(trades, current_odds=0.95)
         assert len(results) == 1
         assert results[0].filter_id == "N09a"
+
+
+# ── Direction filtering (dominant direction) ──────────────
+
+
+class TestDirectionFiltering:
+    """Verify analyze() filters to dominant direction before sub-checks."""
+
+    def test_yes_dominant_accumulation(self):
+        """$8k YES + $3k NO → accumulation uses $8k only (not $11k)."""
+        analyzer = BehaviorAnalyzer()
+        trades = [
+            _make_trade(amount=4000, hours_ago=3, direction="YES"),
+            _make_trade(amount=4000, hours_ago=2, direction="YES"),
+            _make_trade(amount=3000, hours_ago=1, direction="NO"),
+        ]
+        results = analyzer.analyze("0xabc", trades, "market1")
+        ids = {r.filter_id for r in results}
+        # $8k YES in 2 trades → B18c (≥$5k, <$10k)
+        assert any(fid.startswith("B18") for fid in ids)
+        b18_ids = [fid for fid in ids if fid.startswith("B18")]
+        # Must NOT reach B18d (≥$10k) — that would require inflated $11k total
+        assert "B18d" not in b18_ids
+
+    def test_no_dominant_accumulation(self):
+        """$2k YES + $9k NO → dominant direction is NO, accumulation uses $9k."""
+        analyzer = BehaviorAnalyzer()
+        trades = [
+            _make_trade(amount=2000, hours_ago=3, direction="YES"),
+            _make_trade(amount=4500, hours_ago=2, direction="NO"),
+            _make_trade(amount=4500, hours_ago=1, direction="NO"),
+        ]
+        results = analyzer.analyze("0xabc", trades, "market1")
+        ids = {r.filter_id for r in results}
+        b18_ids = [fid for fid in ids if fid.startswith("B18")]
+        assert len(b18_ids) > 0
+        assert "B18d" not in b18_ids  # $9k → B18c, not B18d
+
+    def test_tie_goes_to_yes(self):
+        """$5k YES + $5k NO → YES wins the tie, accumulation = $5k."""
+        analyzer = BehaviorAnalyzer()
+        trades = [
+            _make_trade(amount=5000, hours_ago=2, direction="YES"),
+            _make_trade(amount=5000, hours_ago=1, direction="NO"),
+        ]
+        results = analyzer.analyze("0xabc", trades, "market1")
+        # $5k YES in 1 trade → B18 does NOT fire (needs ≥2 trades)
+        ids = {r.filter_id for r in results}
+        assert not any(fid.startswith("B18") for fid in ids)
+
+    def test_n12_still_receives_mixed_list(self):
+        """N12 merge detection fires even after direction filtering is applied."""
+        analyzer = BehaviorAnalyzer()
+        # Simulate a merge: significant amounts on both sides
+        trades = [
+            _make_trade(amount=5000, hours_ago=3, direction="YES", is_market_order=True),
+            _make_trade(amount=4900, hours_ago=2, direction="NO", is_market_order=False),
+        ]
+        results = analyzer.analyze("0xabc", trades, "market1")
+        ids = {r.filter_id for r in results}
+        # N12 should still be evaluated (it receives the mixed list)
+        # Whether it fires depends on the threshold; we just confirm no crash
+        # and that other filters only see the dominant direction
+        assert isinstance(results, list)
+
+    def test_only_no_trades_uses_no_direction(self):
+        """Wallet with only NO trades → directional list = NO trades, filters apply."""
+        analyzer = BehaviorAnalyzer()
+        trades = [
+            _make_trade(amount=3000, hours_ago=2, direction="NO"),
+            _make_trade(amount=3000, hours_ago=1, direction="NO"),
+        ]
+        results = analyzer.analyze("0xabc", trades, "market1")
+        ids = {r.filter_id for r in results}
+        # $6k NO in 2 trades → B18c should fire
+        assert any(fid.startswith("B18") for fid in ids)

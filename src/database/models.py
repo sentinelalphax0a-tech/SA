@@ -126,6 +126,7 @@ class Alert:
     # (those are invisible to the CLOB API by design). Label for ML, not final diagnosis.
     merge_suspected: bool = False
     merge_confirmed: bool = False           # set by check_merge_resolution() when net<$500
+    scoring_version: str | None = None     # "v1"=mixed-direction bug, "v2"=fixed
     created_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
 
 
