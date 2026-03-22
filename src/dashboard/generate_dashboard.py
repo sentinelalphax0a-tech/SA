@@ -748,7 +748,10 @@ def _compute_wallets_summary(alerts: list[dict]) -> dict:
             entry["markets_won"] / total_resolved, 4
         ) if total_resolved > 0 else 0.0
 
-    return index
+    return {
+        k: v for k, v in index.items()
+        if v["alerts_count"] >= 2 or v["total_amount"] >= 1000
+    }
 
 
 def _compute_events_timeline(
@@ -861,7 +864,7 @@ def _compute_events_timeline(
             })
 
     events.sort(key=lambda e: e.get("timestamp") or "", reverse=True)
-    return events
+    return events[:2000]
 
 
 def _compute_filter_stats(alerts: list[dict]) -> list[dict]:
@@ -1061,6 +1064,15 @@ def generate(output_dir: Path | None = None) -> Path:
     template = TEMPLATE_PATH.read_text(encoding="utf-8")
 
     last_updated = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+    # Strip heavy nested data to reduce JSON size
+    for a in enriched:
+        # Remove full sibling objects — only counts/by_star are used in the UI
+        a.pop("siblings", None)
+        # Remove individual trade details per wallet
+        for w in (a.get("wallets") or []):
+            w.pop("trades", None)
+
     alerts_json = json.dumps(enriched, default=str)
     stats_json = json.dumps(stats, default=str)
     wallets_json = json.dumps(wallets_summary, default=str)
