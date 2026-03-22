@@ -683,6 +683,238 @@ def compute_stats(alerts: list[dict], markets: dict) -> dict:
     }
 
 
+# ── New data blobs for dashboard redesign ────────────────────
+
+
+def _compute_wallets_summary(alerts: list[dict]) -> dict:
+    """Aggregate wallet performance from alert wallets[] JSONB.
+
+    Returns address → {markets_won, markets_lost, win_rate, total_amount,
+    alerts_count, last_seen, alerts: [...]}.
+    """
+    index: dict[str, dict] = {}
+
+    for a in alerts:
+        alert_id = a.get("id")
+        star = a.get("star_level")
+        outcome = a.get("outcome", "pending")
+        direction = a.get("direction")
+        market_question = a.get("market_question", "")
+
+        for w in (a.get("wallets") or []):
+            addr = w.get("address")
+            if not addr:
+                continue
+
+            if addr not in index:
+                index[addr] = {
+                    "address": addr,
+                    "markets_won": 0,
+                    "markets_lost": 0,
+                    "win_rate": 0.0,
+                    "total_amount": 0.0,
+                    "alerts_count": 0,
+                    "last_seen": None,
+                    "alerts": [],
+                }
+
+            entry = index[addr]
+            entry["alerts_count"] += 1
+            entry["total_amount"] = round(
+                entry["total_amount"] + (w.get("total_amount") or 0), 2
+            )
+
+            if outcome == "correct":
+                entry["markets_won"] += 1
+            elif outcome == "incorrect":
+                entry["markets_lost"] += 1
+
+            lt = w.get("last_trade_time")
+            if lt and (entry["last_seen"] is None or lt > entry["last_seen"]):
+                entry["last_seen"] = lt
+
+            entry["alerts"].append({
+                "alert_id": alert_id,
+                "star": star,
+                "outcome": outcome,
+                "market_question": market_question,
+                "direction": direction,
+                "amount": w.get("total_amount", 0),
+            })
+
+    for entry in index.values():
+        total_resolved = entry["markets_won"] + entry["markets_lost"]
+        entry["win_rate"] = round(
+            entry["markets_won"] / total_resolved, 4
+        ) if total_resolved > 0 else 0.0
+
+    return index
+
+
+def _compute_events_timeline(
+    alerts: list[dict],
+    sell_events: list[dict],
+    position_closures: dict,
+) -> list[dict]:
+    """Build a chronological list of all system events.
+
+    Event types: detection, sell, resolution, merge, position_closure.
+    """
+    events: list[dict] = []
+
+    # Build alert_id → metadata index for enriching sell/closure events
+    alert_index: dict = {}
+    for a in alerts:
+        aid = a.get("id")
+        if aid:
+            alert_index[aid] = {
+                "market_question": a.get("market_question", ""),
+                "direction": a.get("direction"),
+                "star_level": a.get("star_level"),
+            }
+
+    # Detection events
+    for a in alerts:
+        events.append({
+            "type": "detection",
+            "timestamp": a.get("created_at"),
+            "alert_id": a.get("id"),
+            "market_question": a.get("market_question", ""),
+            "direction": a.get("direction"),
+            "star_level": a.get("star_level"),
+            "details": {
+                "score": a.get("score"),
+                "total_amount": a.get("total_amount"),
+                "odds_at_alert": a.get("odds_at_alert"),
+                "wallets_count": len(a.get("wallets") or []),
+            },
+        })
+
+    # Sell events from alert_sell_events table
+    for se in sell_events:
+        aid = se.get("alert_id")
+        info = alert_index.get(aid, {})
+        events.append({
+            "type": "sell",
+            "timestamp": se.get("detected_at") or se.get("sell_timestamp"),
+            "alert_id": aid,
+            "market_question": info.get("market_question", ""),
+            "direction": info.get("direction"),
+            "star_level": info.get("star_level"),
+            "details": {
+                "sell_pct": se.get("sell_pct"),
+                "pnl_pct": se.get("pnl_pct"),
+                "event_type": se.get("event_type"),
+                "wallet_address": se.get("wallet_address"),
+                "sell_amount": se.get("sell_amount"),
+            },
+        })
+
+    # Resolution events
+    for a in alerts:
+        if a.get("outcome") in ("correct", "incorrect"):
+            events.append({
+                "type": "resolution",
+                "timestamp": a.get("resolved_at") or a.get("created_at"),
+                "alert_id": a.get("id"),
+                "market_question": a.get("market_question", ""),
+                "direction": a.get("direction"),
+                "star_level": a.get("star_level"),
+                "details": {
+                    "outcome": a.get("outcome"),
+                    "actual_return": a.get("actual_return"),
+                    "realized_return": a.get("realized_return"),
+                },
+            })
+
+    # Merge events
+    for a in alerts:
+        if a.get("merge_confirmed") or a.get("merge_suspected"):
+            events.append({
+                "type": "merge",
+                "timestamp": a.get("created_at"),
+                "alert_id": a.get("id"),
+                "market_question": a.get("market_question", ""),
+                "direction": a.get("direction"),
+                "star_level": a.get("star_level"),
+                "details": {
+                    "merge_confirmed": a.get("merge_confirmed", False),
+                    "merge_suspected": a.get("merge_suspected", False),
+                },
+            })
+
+    # Position closure events (position_gone, merge from wallet_positions)
+    for alert_id, closures in (position_closures or {}).items():
+        info = alert_index.get(alert_id, {})
+        for pc in closures:
+            events.append({
+                "type": "position_closure",
+                "timestamp": pc.get("sell_timestamp"),
+                "alert_id": alert_id,
+                "market_question": info.get("market_question", ""),
+                "direction": info.get("direction"),
+                "star_level": info.get("star_level"),
+                "details": {
+                    "close_reason": pc.get("close_reason"),
+                    "wallet_address": pc.get("wallet_address"),
+                },
+            })
+
+    events.sort(key=lambda e: e.get("timestamp") or "", reverse=True)
+    return events
+
+
+def _compute_filter_stats(alerts: list[dict]) -> list[dict]:
+    """Compute per-filter accuracy stats from resolved alerts.
+
+    Returns list sorted by count desc, each item:
+    {filter_id, filter_name, count, correct_count, incorrect_count,
+     correct_rate, avg_points, category}.
+    """
+    filter_data: dict[str, dict] = {}
+
+    for a in alerts:
+        outcome = a.get("outcome")
+        if outcome not in ("correct", "incorrect"):
+            continue
+        for f in (a.get("filters_triggered") or []):
+            fid = f.get("filter_id", "")
+            if not fid:
+                continue
+            if fid not in filter_data:
+                filter_data[fid] = {
+                    "filter_id": fid,
+                    "filter_name": f.get("filter_name", fid),
+                    "count": 0,
+                    "correct_count": 0,
+                    "incorrect_count": 0,
+                    "_total_points": 0,
+                    "category": f.get("category", "unknown"),
+                }
+            entry = filter_data[fid]
+            entry["count"] += 1
+            if outcome == "correct":
+                entry["correct_count"] += 1
+            else:
+                entry["incorrect_count"] += 1
+            entry["_total_points"] += f.get("points", 0)
+
+    result = []
+    for entry in filter_data.values():
+        count = entry["count"]
+        entry["correct_rate"] = round(
+            entry["correct_count"] / count * 100, 1
+        ) if count > 0 else 0.0
+        entry["avg_points"] = round(
+            entry["_total_points"] / count, 2
+        ) if count > 0 else 0.0
+        del entry["_total_points"]
+        result.append(entry)
+
+    result.sort(key=lambda x: x["count"], reverse=True)
+    return result
+
+
 # ── Alert grouping ───────────────────────────────────────────
 
 
@@ -768,12 +1000,18 @@ def build_html(
     last_updated: str,
     template: str,
     access_key_hash: str = "",
+    wallets_json: str = "{}",
+    events_json: str = "[]",
+    filter_stats_json: str = "[]",
 ) -> str:
     """Inject data into the HTML template."""
     html = template.replace("/* __ALERTS_DATA__ */", alerts_json)
     html = html.replace("/* __STATS_DATA__ */", stats_json)
     html = html.replace("/* __GENERATED_AT__ */", last_updated)
     html = html.replace("/* __ACCESS_KEY_HASH__ */", access_key_hash)
+    html = html.replace("/* __WALLETS_DATA__ */", wallets_json)
+    html = html.replace("/* __EVENTS_DATA__ */", events_json)
+    html = html.replace("/* __FILTER_STATS__ */", filter_stats_json)
     return html
 
 
@@ -807,16 +1045,38 @@ def generate(output_dir: Path | None = None) -> Path:
     stats["last_scan"] = data["last_scan"]
     stats["sell_events"] = data.get("sell_events", [])
 
+    # New data blobs for dashboard redesign
+    wallets_summary = _compute_wallets_summary(data["alerts"])
+    events_timeline = _compute_events_timeline(
+        data["alerts"],
+        data.get("all_sell_events", []),
+        data.get("position_closures", {}),
+    )
+    filter_stats = _compute_filter_stats(data["alerts"])
+    logger.info(
+        "New blobs: %d wallets, %d events, %d filter_stats",
+        len(wallets_summary), len(events_timeline), len(filter_stats),
+    )
+
     template = TEMPLATE_PATH.read_text(encoding="utf-8")
 
     last_updated = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
     alerts_json = json.dumps(enriched, default=str)
     stats_json = json.dumps(stats, default=str)
+    wallets_json = json.dumps(wallets_summary, default=str)
+    events_json = json.dumps(events_timeline, default=str)
+    filter_stats_json = json.dumps(filter_stats, default=str)
 
     raw_key = os.environ.get("DASHBOARD_ACCESS_KEY", "")
     access_key_hash = hashlib.sha256(raw_key.encode()).hexdigest() if raw_key else ""
 
-    html = build_html(alerts_json, stats_json, last_updated, template, access_key_hash=access_key_hash)
+    html = build_html(
+        alerts_json, stats_json, last_updated, template,
+        access_key_hash=access_key_hash,
+        wallets_json=wallets_json,
+        events_json=events_json,
+        filter_stats_json=filter_stats_json,
+    )
 
     out = output_dir or OUTPUT_DIR
     out.mkdir(parents=True, exist_ok=True)
