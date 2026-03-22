@@ -608,13 +608,13 @@ button{font-family:inherit;cursor:pointer}
      DATA
 ══════════════════════════════════════════════════ -->
 <script>
-const ALERTS_DATA     = /* __ALERTS_DATA__ */[];
-const STATS           = /* __STATS_DATA__ */{};
+const ALERTS_DATA     = /* __ALERTS_DATA__ */null;
+const STATS           = /* __STATS_DATA__ */null;
 const GENERATED_AT    = "/* __GENERATED_AT__ */";
 const ACCESS_KEY_HASH = '/* __ACCESS_KEY_HASH__ */';
-const WALLETS_DATA    = /* __WALLETS_DATA__ */{};
-const EVENTS_DATA     = /* __EVENTS_DATA__ */[];
-const FILTER_STATS    = /* __FILTER_STATS__ */[];
+const WALLETS_DATA    = /* __WALLETS_DATA__ */null;
+const EVENTS_DATA     = /* __EVENTS_DATA__ */null;
+const FILTER_STATS    = /* __FILTER_STATS__ */null;
 
 // ── Access control ─────────────────────────────────
 let HAS_ACCESS = false;
@@ -1385,6 +1385,12 @@ document.addEventListener('DOMContentLoaded', async()=>{
   initTheme();
   await _initAccess();
   applyAccessUI();
+
+  if(!ALERTS_DATA || !ALERTS_DATA.length){
+    document.getElementById('alerts-body').innerHTML=
+      '<tr><td colspan="9" class="empty">Sin datos — ejecuta el generador primero</td></tr>';
+    return;
+  }
 
   // Header timestamps
   document.getElementById('hdr-updated').textContent=GENERATED_AT;
